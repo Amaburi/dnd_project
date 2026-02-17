@@ -1,0 +1,59 @@
+# D&D Campaign Manager Configuration
+
+# Application Settings
+app:
+  host: "0.0.0.0"
+  port: 8080
+  environment: "development"
+  debug: true
+
+# MongoDB Configuration (MongoDB Atlas)
+mongodb:
+  uri: "${MONGODB_URI}"  # MongoDB Atlas connection string
+  database: "dnd_campaigns"
+  username: ""  # Already in URI
+  password: ""  # Already in URI
+  auth_source: "admin"
+  max_pool_size: 100
+  min_pool_size: 10
+  connect_timeout: "10s"
+
+# Redis Configuration (for caching)
+redis:
+  host: "localhost"
+  port: 6379
+  password: "${REDIS_PASSWORD}"
+  db: 0
+  pool_size: 10
+
+# DeepSeek AI Configuration
+deepseek:
+  api_key: "${DEEPSEEK_API_KEY}"
+  base_url: "https://api.deepseek.com"
+  model: "deepseek-chat"
+  timeout: "30s"
+  max_retries: 3
+
+# Logging Configuration
+logging:
+  level: "debug"
+  format: "json"
+  output: "stdout"
+
+# Rate Limiting
+rate_limit:
+  requests_per_minute: 60
+  burst: 10
+  ai_requests_per_hour: 100
+
+# Dice Settings
+dice:
+  default_sides: 20
+  enable_advantage: true
+  enable_fudge: false
+
+# Combat Settings
+combat:
+  auto_initiative: true
+  round_duration_seconds: 60
+  max_turn_time_seconds: 120
