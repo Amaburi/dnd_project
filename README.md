@@ -120,7 +120,3 @@ Key design documents:
 - [API Design](docs/API_DESIGN.md)
 - [AI Integration](docs/AI_INTEGRATION.md)
 - [Game Engine](docs/GAME_ENGINE.md)
-
-## License
-
-MIT
