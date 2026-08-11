@@ -8,13 +8,15 @@ PORT=8080
 build:
 	go build -o $(BINARY_NAME) ./cmd/server
 
-# Run development server
+# Run development server.
+# .env is sourced into the environment so config.yaml's ${MONGODB_URI},
+# ${DEEPSEEK_API_KEY} and ${REDIS_PASSWORD} placeholders resolve.
 run: build
-	CONFIG_PATH=./configs/config.yaml ./$(BINARY_NAME)
+	@set -a; if [ -f .env ]; then . ./.env; fi; set +a; ./$(BINARY_NAME)
 
-# Run with custom config
+# Run from source without building a binary
 run-dev:
-	CONFIG_PATH=./configs/config.yaml PORT=$(PORT) go run ./cmd/server
+	@set -a; if [ -f .env ]; then . ./.env; fi; set +a; go run ./cmd/server
 
 # Download dependencies
 deps:

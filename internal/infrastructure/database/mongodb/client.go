@@ -3,6 +3,8 @@ package mongodb
 import (
 	"context"
 	"fmt"
+	"net/url"
+	"strings"
 	"time"
 
 	"go.mongodb.org/mongo-driver/mongo"
@@ -35,14 +37,10 @@ func NewClient(cfg Config) (*Client, error) {
 	defer cancel()
 
 	// Build connection URI
-	uri := fmt.Sprintf(
-		"mongodb://%s:%s@%s/%s?authSource=%s",
-		cfg.Username,
-		cfg.Password,
-		cfg.URI,
-		cfg.Database,
-		cfg.AuthSource,
-	)
+	uri, err := buildConnectionURI(cfg)
+	if err != nil {
+		return nil, err
+	}
 
 	// Configure client options
 	clientOptions := options.Client().
@@ -87,4 +85,32 @@ func (c *Client) Close(ctx context.Context) error {
 // Client returns the underlying mongo client
 func (c *Client) Client() *mongo.Client {
 	return c.client
+}
+
+// buildConnectionURI resolves the connection string to hand to the driver.
+//
+// A URI that already carries a scheme (the MongoDB Atlas case, which needs
+// mongodb+srv:// plus its query parameters) is used verbatim. Only a bare
+// host:port is assembled into a full URI from the individual settings.
+func buildConnectionURI(cfg Config) (string, error) {
+	if cfg.URI == "" {
+		return "", fmt.Errorf("mongodb uri is not configured (set MONGODB_URI)")
+	}
+
+	if strings.HasPrefix(cfg.URI, "mongodb://") || strings.HasPrefix(cfg.URI, "mongodb+srv://") {
+		return cfg.URI, nil
+	}
+
+	if cfg.Username == "" {
+		return fmt.Sprintf("mongodb://%s/%s", cfg.URI, cfg.Database), nil
+	}
+
+	return fmt.Sprintf(
+		"mongodb://%s:%s@%s/%s?authSource=%s",
+		url.QueryEscape(cfg.Username),
+		url.QueryEscape(cfg.Password),
+		cfg.URI,
+		cfg.Database,
+		cfg.AuthSource,
+	), nil
 }

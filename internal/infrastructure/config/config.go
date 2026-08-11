@@ -2,6 +2,8 @@ package config
 
 import (
 	"fmt"
+	"os"
+	"strings"
 	"time"
 
 	"github.com/spf13/viper"
@@ -71,47 +73,77 @@ type RateLimitConfig struct {
 
 // Load reads configuration from config.yaml and environment variables
 func Load() (*Config, error) {
-	viper.SetConfigName("config")
-	viper.SetConfigType("yaml")
-	viper.AddConfigPath(".")
-	viper.AddConfigPath("./configs")
-	viper.AddConfigPath("/etc/dnd-campaign/")
+	v := viper.New()
 
-	// Enable environment variable override
-	viper.AutomaticEnv()
+	v.SetConfigName("config")
+	v.SetConfigType("yaml")
+	v.AddConfigPath(".")
+	v.AddConfigPath("./configs")
+	v.AddConfigPath("/etc/dnd-campaign/")
+
+	// Enable environment variable override. The replacer maps nested keys onto
+	// flat env var names, e.g. "mongodb.uri" -> MONGODB_URI. Without it
+	// AutomaticEnv looks up "MONGODB.URI", which no shell can set.
+	v.SetEnvKeyReplacer(strings.NewReplacer(".", "_"))
+	v.AutomaticEnv()
+
+	// AutomaticEnv only resolves keys viper already knows about, so bind the
+	// secrets explicitly -- they must work even with no config file present.
+	for key, env := range map[string]string{
+		"mongodb.uri":      "MONGODB_URI",
+		"deepseek.api_key": "DEEPSEEK_API_KEY",
+		"redis.password":   "REDIS_PASSWORD",
+	} {
+		if err := v.BindEnv(key, env); err != nil {
+			return nil, fmt.Errorf("failed to bind %s: %w", env, err)
+		}
+	}
 
 	// Set defaults
-	viper.SetDefault("app.host", "0.0.0.0")
-	viper.SetDefault("app.port", 8080)
-	viper.SetDefault("app.environment", "development")
-	viper.SetDefault("app.debug", true)
+	v.SetDefault("app.host", "0.0.0.0")
+	v.SetDefault("app.port", 8080)
+	v.SetDefault("app.environment", "development")
+	v.SetDefault("app.debug", true)
 
-	viper.SetDefault("mongodb.max_pool_size", 100)
-	viper.SetDefault("mongodb.min_pool_size", 10)
-	viper.SetDefault("mongodb.connect_timeout", "10s")
+	v.SetDefault("mongodb.max_pool_size", 100)
+	v.SetDefault("mongodb.min_pool_size", 10)
+	v.SetDefault("mongodb.connect_timeout", "10s")
 
-	viper.SetDefault("redis.pool_size", 10)
+	v.SetDefault("redis.pool_size", 10)
 
-	viper.SetDefault("deepseek.model", "deepseek-chat")
-	viper.SetDefault("deepseek.timeout", "30s")
-	viper.SetDefault("deepseek.max_retries", 3)
+	v.SetDefault("deepseek.model", "deepseek-chat")
+	v.SetDefault("deepseek.timeout", "30s")
+	v.SetDefault("deepseek.max_retries", 3)
 
-	viper.SetDefault("logging.level", "debug")
-	viper.SetDefault("logging.format", "json")
+	v.SetDefault("logging.level", "debug")
+	v.SetDefault("logging.format", "json")
 
-	viper.SetDefault("rate_limit.requests_per_minute", 60)
-	viper.SetDefault("rate_limit.burst", 10)
-	viper.SetDefault("rate_limit.ai_requests_per_hour", 100)
+	v.SetDefault("rate_limit.requests_per_minute", 60)
+	v.SetDefault("rate_limit.burst", 10)
+	v.SetDefault("rate_limit.ai_requests_per_hour", 100)
 
 	// Read config file
-	if err := viper.ReadInConfig(); err != nil {
+	if err := v.ReadInConfig(); err != nil {
 		if _, ok := err.(viper.ConfigFileNotFoundError); !ok {
 			return nil, fmt.Errorf("failed to read config file: %w", err)
 		}
 	}
 
+	// Viper does not interpolate "${VAR}" placeholders, so re-read the located
+	// file with the environment expanded. An unset variable expands to "" --
+	// never to the literal placeholder.
+	if file := v.ConfigFileUsed(); file != "" {
+		raw, err := os.ReadFile(file)
+		if err != nil {
+			return nil, fmt.Errorf("failed to read %s: %w", file, err)
+		}
+		if err := v.ReadConfig(strings.NewReader(os.ExpandEnv(string(raw)))); err != nil {
+			return nil, fmt.Errorf("failed to parse %s: %w", file, err)
+		}
+	}
+
 	var cfg Config
-	if err := viper.Unmarshal(&cfg); err != nil {
+	if err := v.Unmarshal(&cfg); err != nil {
 		return nil, fmt.Errorf("failed to unmarshal config: %w", err)
 	}
 

@@ -1,0 +1,16 @@
+# Environment / secrets
+.env
+.env.local
+/config.yaml
+
+# Build artifacts (anchored: must not match cmd/server/)
+/server
+/dnd-campaign-manager
+*.exe
+*.test
+coverage.out
+
+# Editor / OS
+.DS_Store
+.idea/
+.vscode/
