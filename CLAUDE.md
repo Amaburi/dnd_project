@@ -16,8 +16,10 @@ Phases 2–5 are not started.
 | Campaign + Character models & repositories | Implemented |
 | Campaign + Character REST CRUD | Implemented, campaign-scoped, cascading delete |
 | AI client, prompt builder, AI service | Implemented, **not wired into the API** |
+| 5e rules vocabulary + derived stats | Implemented in `models`, unit-tested |
+| Monster statblocks | **Model only** — no repository, no routes |
 | Session / StoryEvent / CombatEncounter | **Models only** — no repository, no routes |
-| Dice system, rules engine, combat tracker | **Spec only** (`docs/GAME_ENGINE.md`) — no code |
+| Dice roller, rules engine, combat tracker | **Spec only** (`docs/GAME_ENGINE.md`) — no code |
 | Auth, rate limiting, Docker | **Config/docs only** — no code |
 
 Consequences that bite:
@@ -50,7 +52,7 @@ a measured reason, not because a doc still mentions them:
 make run-dev    # run from source (sources .env first)
 make run        # build ./dnd-campaign-manager, then run it
 make build
-go test ./...   # 34 tests across handlers, ai, config, mongodb
+go test ./...   # 63 tests across models, handlers, ai, config, mongodb
 make lint       # golangci-lint (not vendored — install separately)
 ```
 
@@ -99,7 +101,9 @@ URI resolution lives in `mongodb.buildConnectionURI`, which passes any `mongodb:
 cmd/server/main.go            composition root — all wiring lives here
 internal/api/server.go        Gin engine, route table, graceful shutdown
 internal/api/handlers/        HTTP handlers
-internal/domain/models/       structs + Session behaviour methods
+internal/domain/models/       entities (Character, Campaign, Session, Monster) plus the
+                              typed 5e vocabulary (abilities, skills, conditions, items,
+                              spells, dice) and the rules encoded as methods
 internal/infrastructure/
   config/                     Viper loader
   database/mongodb/           client, collections, indexes, repositories
@@ -119,14 +123,12 @@ means touching `NewServer`'s signature and the `Server` struct — there is no r
 ## Domain conventions
 
 **Dual identity.** Every persisted entity carries both a Mongo `_id` (`primitive.ObjectID`)
-and a separate string business ID (`campaign_id`, `character_id`, `session_id`, `event_id`).
-The string ID is generated in the repository via `primitive.NewObjectID().Hex()` when blank,
-and carries a **unique index**. Cross-document references always use the string ID, never
-`_id`. HTTP routes address entities by `_id` hex.
+and a separate string business ID (`campaign_id`, `character_id`, `monster_id`,
+`session_id`). The string ID is generated in the repository via
+`primitive.NewObjectID().Hex()` when blank, and carries a **unique index**. Cross-document
+references always use the string ID, never `_id`. HTTP routes address entities by `_id` hex.
 
-**Timestamps are `time.Time` everywhere, always UTC.** `Character` previously used
-`primitive.DateTime`, which serialised as a JSON number while every other model emitted
-RFC 3339. Set them with `time.Now().UTC()`.
+**Timestamps are `time.Time` everywhere, always UTC.** Set them with `time.Now().UTC()`.
 
 **Campaign scoping.** Characters belong to a campaign via the `campaign_id` string field,
 and every character read, update and delete filters on `_id` **and** `campaign_id`, so a
@@ -135,11 +137,48 @@ campaign `_id`; handlers resolve it to `campaign.CampaignID` before touching cha
 which also validates that the campaign exists. Deleting a campaign deletes its characters
 first — the reverse order would strand unreachable orphans.
 
-**Enums are bare strings.** Only session status and attendance have constants
-(`models.SessionStatus*`, `models.Attendance*`). Character `type`
-(`player` / `npc` / `enemy` / `monster`), campaign `status`, event types, damage types and
-the rest are unconstrained strings validated nowhere. Prefer adding constants over
-inventing a new literal.
+### The 5e vocabulary is typed — use it
+
+`abilities.go`, `skills.go`, `conditions.go`, `items.go`, `spells.go` and `dice.go` hold the
+shared game vocabulary. **Never reintroduce a bare `string` for one of these.**
+
+| Type | Notes |
+|---|---|
+| `Ability` | six constants; `AbilityScores.Modifier(a)` |
+| `Skill` | eighteen constants; `SkillAbility` is the only skill→ability table |
+| `Proficiency` | `none` / `half` / `proficient` / `expertise` — **not a bool**, Expertise doubles and Jack of All Trades halves |
+| `Condition` | closed set of fourteen flags; exhaustion is `Character.Exhaustion` (0–6) because it has degrees |
+| `DamageType` | thirteen constants; `DamageAffinity` applies resist/immune/vulnerable |
+| `RollMode` | `Combine` never stacks — advantage plus disadvantage is a normal roll |
+| `CharacterType` | `player` / `npc` only. Hostiles are `Monster`, not characters |
+
+**Derived stats are methods, never fields.** `ProficiencyBonus()`, `SkillModifier()`,
+`SavingThrowModifier()`, `ArmorClass()`, `InitiativeModifier()`, `PassivePerception()`,
+`SpellSaveDC()`, `SpellAttackModifier()` are all pure functions of stored data. They used
+to be stored and drifted the moment a character levelled or changed armor. `CombatStats`
+keeps only what nothing can infer: hit points, hit dice, death saves, speed, and explicit
+`ArmorClassBonus` / `InitiativeBonus` for magic items and feats.
+
+**Rules encoded in the model** (so the engine cannot get them wrong later):
+`AbilityModifier` floors toward negative infinity; `HitPoints.ApplyDamage` spends temporary
+hit points first, clamps at 0 and **returns the overflow** so `IsMassiveDamage` can kill
+outright; `AddTemporary` takes the higher rather than stacking; `Heal` never restores
+temporary hit points; `Combatant.TakeDamage` handles dying/stable/dead and adds death-save
+failures for damage taken while down (two on a critical); `ResolveAttack` honours natural
+20/1 while `ResolveCheck` deliberately does not — automatic success on ability checks is a
+house rule, not RAW.
+
+**Items carry their mechanics.** `InventoryItem` has optional `Weapon` and `Armor` blocks.
+Armor class is computed from equipment (`light` adds full DEX, `medium` caps it at +2,
+`heavy` ignores it, shield +2), so **never store an AC someone typed in**.
+
+**Spell slots and hit dice are the resource economy.** `Spells.ExpendSlot(level)` takes the
+level actually cast at, so upcasting works. `HitDice.RegainOnLongRest` returns half the
+total rounded down, minimum one.
+
+**Enums that are still bare strings:** campaign `status`, event types, `Action.ActionType`,
+`Relationship.RelationType`, alignment, monster `Type`. Prefer adding constants over
+inventing a literal.
 
 ## Repository conventions
 
@@ -212,7 +251,9 @@ nothing can reach them.
 spec (unimplemented, this is the blueprint for Phase 2) · `DATA_MODELS.md` schema reference ·
 `API_DESIGN.md` planned endpoint surface · `AI_INTEGRATION.md` + `AI_CONTEXT_PROMPTS.md`
 prompt strategy · `MONGODB_SETUP.md` Atlas setup · `IMPLEMENTATION_ROADMAP.md` phase plan ·
-`PROJECT_STRUCTURE.md` aspirational tree.
+`PROJECT_STRUCTURE.md` aspirational tree ·
+**`MIGRATION_2026-09-04.md` breaking schema changes — read before pointing the server at
+existing data.**
 
 ## Working agreements
 

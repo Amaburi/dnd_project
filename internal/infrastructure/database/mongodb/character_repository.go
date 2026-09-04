@@ -131,8 +131,8 @@ func (r *CharacterRepository) GetCharactersByCampaign(ctx context.Context, campa
 	return r.findCharacters(ctx, bson.M{"campaign_id": campaignID})
 }
 
-// GetCharactersByType gets characters by type (player/npc/enemy/monster)
-func (r *CharacterRepository) GetCharactersByType(ctx context.Context, campaignID string, charType string) ([]*models.Character, error) {
+// GetCharactersByType gets characters by type (player or npc)
+func (r *CharacterRepository) GetCharactersByType(ctx context.Context, campaignID string, charType models.CharacterType) ([]*models.Character, error) {
 	return r.findCharacters(ctx, bson.M{
 		"campaign_id": campaignID,
 		"type":        charType,
@@ -141,20 +141,12 @@ func (r *CharacterRepository) GetCharactersByType(ctx context.Context, campaignI
 
 // GetPlayerCharacters gets all player characters in a campaign
 func (r *CharacterRepository) GetPlayerCharacters(ctx context.Context, campaignID string) ([]*models.Character, error) {
-	return r.GetCharactersByType(ctx, campaignID, "player")
+	return r.GetCharactersByType(ctx, campaignID, models.CharacterPlayer)
 }
 
 // GetNPCs gets all NPCs in a campaign
 func (r *CharacterRepository) GetNPCs(ctx context.Context, campaignID string) ([]*models.Character, error) {
-	return r.GetCharactersByType(ctx, campaignID, "npc")
-}
-
-// GetEnemies gets all enemies in a campaign
-func (r *CharacterRepository) GetEnemies(ctx context.Context, campaignID string) ([]*models.Character, error) {
-	return r.findCharacters(ctx, bson.M{
-		"campaign_id": campaignID,
-		"type":        bson.M{"$in": []string{"enemy", "monster"}},
-	})
+	return r.GetCharactersByType(ctx, campaignID, models.CharacterNPC)
 }
 
 // UpdateCharacter updates the mutable fields of a character within a campaign.
@@ -183,7 +175,7 @@ func (r *CharacterRepository) UpdateCharacter(ctx context.Context, campaignID st
 		"player_name":            character.PlayerName,
 		"basic_info":             character.BasicInfo,
 		"ability_scores":         character.AbilityScores,
-		"derived_stats":          character.DerivedStats,
+		"combat_stats":           character.CombatStats,
 		"skills":                 character.Skills,
 		"saving_throws":          character.SavingThrows,
 		"inventory":              emptyIfNil(character.Inventory),
@@ -191,8 +183,8 @@ func (r *CharacterRepository) UpdateCharacter(ctx context.Context, campaignID st
 		"spells":                 character.Spells,
 		"features_and_abilities": emptyIfNil(character.FeaturesAndAbilities),
 		"background_story":       character.BackgroundStory,
-		"status_effects":         emptyIfNil(character.StatusEffects),
 		"conditions":             emptyIfNil(character.Conditions),
+		"exhaustion":             character.Exhaustion,
 		"relationships":          emptyIfNil(character.Relationships),
 		"ai_metadata":            character.AIMetadata,
 		"updated_at":             now,
@@ -225,10 +217,10 @@ func (r *CharacterRepository) UpdateCharacterHP(ctx context.Context, characterID
 		bson.M{"_id": characterID},
 		bson.M{
 			"$set": bson.M{
-				"derived_stats.hit_points.current":   currentHP,
-				"derived_stats.hit_points.maximum":   maxHP,
-				"derived_stats.hit_points.temporary": tempHP,
-				"updated_at":                         time.Now().UTC(),
+				"combat_stats.hit_points.current":   currentHP,
+				"combat_stats.hit_points.maximum":   maxHP,
+				"combat_stats.hit_points.temporary": tempHP,
+				"updated_at":                        time.Now().UTC(),
 			},
 		},
 	)
@@ -241,19 +233,27 @@ func (r *CharacterRepository) UpdateCharacterHP(ctx context.Context, characterID
 	return nil
 }
 
-// AddStatusEffect adds a status effect to a character
-func (r *CharacterRepository) AddStatusEffect(ctx context.Context, characterID primitive.ObjectID, effect string) error {
+// AddCondition applies a 5e condition to a character.
+//
+// Unknown strings are rejected rather than stored: conditions are a closed set
+// of fifteen, and the free-form status_effects list this replaced meant no
+// caller could rely on what a condition value would be.
+func (r *CharacterRepository) AddCondition(ctx context.Context, characterID primitive.ObjectID, condition models.Condition) error {
+	if !condition.Valid() {
+		return models.Invalid("unknown condition %q", condition)
+	}
+
 	collection := r.client.Database().Collection(string(Characters))
 	result, err := collection.UpdateOne(
 		ctx,
 		bson.M{"_id": characterID},
 		bson.M{
-			"$addToSet": bson.M{"status_effects": effect},
+			"$addToSet": bson.M{"conditions": condition},
 			"$set":      bson.M{"updated_at": time.Now().UTC()},
 		},
 	)
 	if err != nil {
-		return fmt.Errorf("failed to add status effect: %w", err)
+		return fmt.Errorf("failed to add condition: %w", err)
 	}
 	if result.MatchedCount == 0 {
 		return models.NotFound("character")
@@ -261,19 +261,44 @@ func (r *CharacterRepository) AddStatusEffect(ctx context.Context, characterID p
 	return nil
 }
 
-// RemoveStatusEffect removes a status effect from a character
-func (r *CharacterRepository) RemoveStatusEffect(ctx context.Context, characterID primitive.ObjectID, effect string) error {
+// RemoveCondition clears a condition from a character.
+func (r *CharacterRepository) RemoveCondition(ctx context.Context, characterID primitive.ObjectID, condition models.Condition) error {
 	collection := r.client.Database().Collection(string(Characters))
 	result, err := collection.UpdateOne(
 		ctx,
 		bson.M{"_id": characterID},
 		bson.M{
-			"$pull": bson.M{"status_effects": effect},
+			"$pull": bson.M{"conditions": condition},
 			"$set":  bson.M{"updated_at": time.Now().UTC()},
 		},
 	)
 	if err != nil {
-		return fmt.Errorf("failed to remove status effect: %w", err)
+		return fmt.Errorf("failed to remove condition: %w", err)
+	}
+	if result.MatchedCount == 0 {
+		return models.NotFound("character")
+	}
+	return nil
+}
+
+// SetExhaustion sets a character's exhaustion level.
+//
+// Exhaustion is the one condition with degrees -- six levels of escalating
+// penalty, reduced by one per long rest -- so it is a number, not membership
+// in the condition list.
+func (r *CharacterRepository) SetExhaustion(ctx context.Context, characterID primitive.ObjectID, level int) error {
+	if level < 0 || level > models.MaxExhaustion {
+		return models.Invalid("exhaustion must be between 0 and %d, got %d", models.MaxExhaustion, level)
+	}
+
+	collection := r.client.Database().Collection(string(Characters))
+	result, err := collection.UpdateOne(
+		ctx,
+		bson.M{"_id": characterID},
+		bson.M{"$set": bson.M{"exhaustion": level, "updated_at": time.Now().UTC()}},
+	)
+	if err != nil {
+		return fmt.Errorf("failed to set exhaustion: %w", err)
 	}
 	if result.MatchedCount == 0 {
 		return models.NotFound("character")

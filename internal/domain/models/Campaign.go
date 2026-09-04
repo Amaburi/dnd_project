@@ -93,26 +93,14 @@ type NarrativeInfo struct {
 	DiceResults      *DiceResults `json:"dice_results" bson:"dice_results"`
 }
 
-// DiceResults contains dice roll information
-type DiceResults struct {
-	RollType    string `json:"roll_type" bson:"roll_type"` // "ability_check", "saving_throw", "attack", "damage"
-	Skill       string `json:"skill" bson:"skill"`
-	Modifier    int    `json:"modifier" bson:"modifier"`
-	Roll        int    `json:"roll" bson:"roll"`
-	Total       int    `json:"total" bson:"total"`
-	NaturalRoll int    `json:"natural_roll" bson:"natural_roll"`
-	DC          int    `json:"dc" bson:"dc"`
-	Outcome     string `json:"outcome" bson:"outcome"` // "success", "failure", "critical_success", "critical_failure"
-}
-
 // GameStateChanges tracks changes to game state
 type GameStateChanges struct {
-	LocationChanged    bool       `json:"location_changed" bson:"location_changed"`
-	NewLocation        string     `json:"new_location" bson:"new_location"`
-	CharactersInvolved []string   `json:"characters_involved" bson:"characters_involved"`
-	ConditionsApplied  []string   `json:"conditions_applied" bson:"conditions_applied"`
-	ItemsGained        []string   `json:"items_gained" bson:"items_gained"`
-	HPChanges          []HPChange `json:"hp_changes" bson:"hp_changes"`
+	LocationChanged    bool        `json:"location_changed" bson:"location_changed"`
+	NewLocation        string      `json:"new_location" bson:"new_location"`
+	CharactersInvolved []string    `json:"characters_involved" bson:"characters_involved"`
+	ConditionsApplied  []Condition `json:"conditions_applied" bson:"conditions_applied"`
+	ItemsGained        []string    `json:"items_gained" bson:"items_gained"`
+	HPChanges          []HPChange  `json:"hp_changes" bson:"hp_changes"`
 }
 
 // HPChange represents a change in hit points
@@ -156,33 +144,123 @@ type CombatEncounter struct {
 	UpdatedAt         time.Time           `json:"updated_at" bson:"updated_at"`
 }
 
+// CombatantStatus is a combatant's state in the turn order.
+//
+// "unconscious" and "dead" alone could not express the state 5e spends the
+// most time in: a creature at 0 hit points that is neither stable nor dead and
+// is rolling death saves each turn.
+type CombatantStatus string
+
+const (
+	CombatantActive      CombatantStatus = "active"
+	CombatantDying       CombatantStatus = "dying" // at 0 HP, rolling death saves
+	CombatantStable      CombatantStatus = "stable"
+	CombatantUnconscious CombatantStatus = "unconscious" // from a spell or effect, not from 0 HP
+	CombatantDead        CombatantStatus = "dead"
+)
+
+// CombatantSource says which collection a combatant's statblock came from,
+// since players and NPCs are Characters while hostiles are Monsters.
+type CombatantSource string
+
+const (
+	SourceCharacter CombatantSource = "character"
+	SourceMonster   CombatantSource = "monster"
+)
+
 // Combatant represents a participant in combat
 type Combatant struct {
-	CombatantID        string     `json:"combatant_id" bson:"combatant_id"`
-	CharacterID        string     `json:"character_id" bson:"character_id"`
-	Type               string     `json:"type" bson:"type"` // "player", "enemy", "npc"
-	Name               string     `json:"name" bson:"name"`
-	Initiative         int        `json:"initiative" bson:"initiative"`
-	InitiativeModifier int        `json:"initiative_modifier" bson:"initiative_modifier"`
-	TurnOrder          int        `json:"turn_order" bson:"turn_order"`
-	CurrentHP          int        `json:"current_hp" bson:"current_hp"`
-	MaxHP              int        `json:"max_hp" bson:"max_hp"`
-	TemporaryHP        int        `json:"temporary_hp" bson:"temporary_hp"`
-	ArmorClass         int        `json:"armor_class" bson:"armor_class"`
-	Status             string     `json:"status" bson:"status"` // "active", "unconscious", "dead"
-	Conditions         []string   `json:"conditions" bson:"conditions"`
-	ActionsTaken       int        `json:"actions_taken" bson:"actions_taken"`
-	BonusActionsTaken  int        `json:"bonus_actions_taken" bson:"bonus_actions_taken"`
-	ReactionsRemaining int        `json:"reactions_remaining" bson:"reactions_remaining"`
-	MovementRemaining  int        `json:"movement_remaining" bson:"movement_remaining"`
-	ConcentratingOn    *string    `json:"concentrating_on" bson:"concentrating_on"`
-	DeathSaves         DeathSaves `json:"death_saves" bson:"death_saves"`
+	CombatantID string          `json:"combatant_id" bson:"combatant_id"`
+	SourceType  CombatantSource `json:"source_type" bson:"source_type"`
+	SourceID    string          `json:"source_id" bson:"source_id"` // character_id or monster_id
+	Type        string          `json:"type" bson:"type"`           // "player", "enemy", "npc"
+	Name        string          `json:"name" bson:"name"`
+
+	Initiative         int `json:"initiative" bson:"initiative"`
+	InitiativeModifier int `json:"initiative_modifier" bson:"initiative_modifier"`
+	TurnOrder          int `json:"turn_order" bson:"turn_order"`
+
+	HitPoints  HitPoints `json:"hit_points" bson:"hit_points"`
+	ArmorClass int       `json:"armor_class" bson:"armor_class"`
+
+	Status     CombatantStatus `json:"status" bson:"status"`
+	Conditions []Condition     `json:"conditions" bson:"conditions"`
+	Exhaustion int             `json:"exhaustion,omitempty" bson:"exhaustion,omitempty"`
+
+	// Action and bonus action are once per turn, so they are flags rather
+	// than counters. A reaction is once per round and refreshes at the start
+	// of the creature's turn.
+	ActionUsed        bool `json:"action_used" bson:"action_used"`
+	BonusActionUsed   bool `json:"bonus_action_used" bson:"bonus_action_used"`
+	ReactionUsed      bool `json:"reaction_used" bson:"reaction_used"`
+	MovementRemaining int  `json:"movement_remaining" bson:"movement_remaining"`
+
+	ConcentratingOn *string    `json:"concentrating_on" bson:"concentrating_on"`
+	DeathSaves      DeathSaves `json:"death_saves" bson:"death_saves"`
 }
 
-// DeathSaves tracks death saving throws
-type DeathSaves struct {
-	Successes int `json:"successes" bson:"successes"`
-	Failures  int `json:"failures" bson:"failures"`
+// StartTurn resets the per-turn resources at the start of a combatant's turn.
+func (c *Combatant) StartTurn(speed int) {
+	c.ActionUsed = false
+	c.BonusActionUsed = false
+	c.ReactionUsed = false
+	c.MovementRemaining = speed
+}
+
+// HasCondition reports whether a condition is currently applied.
+func (c *Combatant) HasCondition(cond Condition) bool {
+	for _, have := range c.Conditions {
+		if have == cond {
+			return true
+		}
+	}
+	return false
+}
+
+// TakeDamage applies damage and updates the combatant's status.
+//
+// This encodes the 5e rules around dropping to 0: leftover damage of at least
+// the hit point maximum kills outright, damage taken while already down adds
+// a death save failure (two on a critical), and any damage breaks the
+// stabilised state.
+func (c *Combatant) TakeDamage(amount int, critical bool) {
+	if c.Status == CombatantDead {
+		return
+	}
+
+	alreadyDown := c.HitPoints.Current == 0
+	overflow := c.HitPoints.ApplyDamage(amount)
+
+	switch {
+	case c.HitPoints.IsMassiveDamage(overflow):
+		c.Status = CombatantDead
+	case alreadyDown:
+		c.DeathSaves.Failures++
+		if critical {
+			c.DeathSaves.Failures++
+		}
+		if c.DeathSaves.Dead() {
+			c.Status = CombatantDead
+		} else {
+			c.Status = CombatantDying
+		}
+	case c.HitPoints.Current == 0:
+		c.Status = CombatantDying
+		c.DeathSaves.Reset()
+	}
+}
+
+// Heal restores hit points, bringing a downed combatant back to consciousness
+// and clearing any death saves, as regaining even 1 hit point does.
+func (c *Combatant) Heal(amount int) {
+	if c.Status == CombatantDead || amount <= 0 {
+		return
+	}
+	c.HitPoints.Heal(amount)
+	if c.HitPoints.Current > 0 {
+		c.Status = CombatantActive
+		c.DeathSaves.Reset()
+	}
 }
 
 // CombatState tracks the current state of combat
@@ -210,30 +288,32 @@ type Turn struct {
 
 // Action represents an action taken in combat
 type Action struct {
-	ActionType  string      `json:"action_type" bson:"action_type"` // "attack", "spell", "item", "dash", "dodge", "help"
-	Description string      `json:"description" bson:"description"`
-	Target      string      `json:"target" bson:"target"`
-	RollResult  *RollResult `json:"roll_result" bson:"roll_result"`
-	Damage      *Damage     `json:"damage" bson:"damage"`
+	ActionType  string        `json:"action_type" bson:"action_type"` // "attack", "spell", "item", "dash", "dodge", "help"
+	Description string        `json:"description" bson:"description"`
+	Target      string        `json:"target" bson:"target"`
+	Attack      *AttackResult `json:"attack,omitempty" bson:"attack,omitempty"`
+	Damage      *Damage       `json:"damage,omitempty" bson:"damage,omitempty"`
 }
 
-// RollResult contains the result of a roll
-type RollResult struct {
-	Roll     int  `json:"roll" bson:"roll"`
-	Natural  int  `json:"natural" bson:"natural"`
-	Modifier int  `json:"modifier" bson:"modifier"`
-	Total    int  `json:"total" bson:"total"`
-	Hit      bool `json:"hit" bson:"hit"`
-	Critical bool `json:"critical" bson:"critical"`
+// AttackResult records an attack roll and how it landed.
+type AttackResult struct {
+	Roll     D20Result     `json:"roll" bson:"roll"`
+	TargetAC int           `json:"target_ac" bson:"target_ac"`
+	Outcome  AttackOutcome `json:"outcome" bson:"outcome"`
 }
 
-// Damage represents damage dealt
+// Damage represents damage dealt.
+//
+// Rolled is what the dice and modifiers produced; Dealt is what the target
+// actually lost after resistance, immunity or vulnerability was applied. They
+// differ often enough that recording only one loses the explanation.
 type Damage struct {
-	DamageType     string `json:"damage_type" bson:"damage_type"`
-	DamageRoll     string `json:"damage_roll" bson:"damage_roll"`
-	DamageTotal    int    `json:"damage_total" bson:"damage_total"`
-	DamageModifier string `json:"damage_modifier" bson:"damage_modifier"`
-	HitPoints      int    `json:"hit_points" bson:"hit_points"`
+	DamageType DamageType     `json:"damage_type" bson:"damage_type"`
+	DamageRoll string         `json:"damage_roll" bson:"damage_roll"` // e.g. "1d8+3"
+	Rolled     int            `json:"rolled" bson:"rolled"`
+	Affinity   DamageAffinity `json:"affinity" bson:"affinity"`
+	Dealt      int            `json:"dealt" bson:"dealt"`
+	Critical   bool           `json:"critical" bson:"critical"`
 }
 
 // Movement represents movement in combat
@@ -245,12 +325,12 @@ type Movement struct {
 
 // DamageLogEntry logs damage dealt
 type DamageLogEntry struct {
-	Attacker   string    `json:"attacker" bson:"attacker"`
-	Target     string    `json:"target" bson:"target"`
-	Damage     int       `json:"damage" bson:"damage"`
-	DamageType string    `json:"damage_type" bson:"damage_type"`
-	Round      int       `json:"round" bson:"round"`
-	Timestamp  time.Time `json:"timestamp" bson:"timestamp"`
+	Attacker   string     `json:"attacker" bson:"attacker"`
+	Target     string     `json:"target" bson:"target"`
+	Damage     int        `json:"damage" bson:"damage"`
+	DamageType DamageType `json:"damage_type" bson:"damage_type"`
+	Round      int        `json:"round" bson:"round"`
+	Timestamp  time.Time  `json:"timestamp" bson:"timestamp"`
 }
 
 // NarrativeLogEntry logs narrative descriptions

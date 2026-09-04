@@ -13,6 +13,7 @@ type CollectionName string
 const (
 	Campaigns        CollectionName = "campaigns"
 	Characters       CollectionName = "characters"
+	Monsters         CollectionName = "monsters"
 	Sessions         CollectionName = "sessions"
 	StoryEvents      CollectionName = "story_events"
 	CombatEncounters CollectionName = "combat_encounters"
@@ -24,6 +25,7 @@ func (c *Client) InitializeCollections(ctx context.Context) error {
 	collections := []CollectionName{
 		Campaigns,
 		Characters,
+		Monsters,
 		Sessions,
 		StoryEvents,
 		CombatEncounters,

@@ -15,6 +15,9 @@ All persistence lives in `internal/infrastructure/database/mongodb/`. Repositori
 | `ID` | `primitive.ObjectID`, `bson:"_id,omitempty"` | Mongo primary key. HTTP routes address entities by its hex. |
 | `<Entity>ID` | `string`, e.g. `bson:"campaign_id"` | Business ID. **Uniquely indexed.** All cross-document references use this. |
 
+Collections: `campaigns`, `characters`, `monsters`, `sessions`, `story_events`,
+`combat_encounters`, `game_logs`. Only campaigns and characters have repositories so far.
+
 The string ID is generated in the repository's Create method when blank:
 
 ```go
@@ -25,6 +28,10 @@ if campaign.CampaignID == "" {
 
 Never reference another document by `_id`. `Character.CampaignID`,
 `Session.CombatEncounters`, `StoryEvent.SessionID` are all string business IDs.
+
+**Hostile creatures are `Monster`, not `Character`.** `CharacterType` is `player` or `npc`
+only; a statblock has a challenge rating, damage resistances and legendary actions that
+the character schema cannot express.
 
 ## Never `$set` a whole struct — read before writing any update
 
@@ -153,3 +160,24 @@ Repository methods that return slices decode with `cursor.All`; always
 - [ ] `defer cursor.Close(ctx)` on every cursor
 - [ ] User input never reaches `$regex` unescaped
 - [ ] `go test ./internal/infrastructure/database/mongodb/...` passes
+
+## Typed game vocabulary
+
+Character fields use the typed 5e vocabulary from `internal/domain/models` — `Skill`,
+`Ability`, `Proficiency`, `Condition`, `DamageType`, `CharacterType`. When writing a filter
+or update, use the constants, never a bare string:
+
+```go
+bson.M{"campaign_id": id, "type": models.CharacterPlayer}
+bson.M{"$addToSet": bson.M{"conditions": models.ConditionProne}}
+```
+
+Validate closed sets before writing them — `AddCondition` rejects an unknown condition
+rather than storing it, because the free-string list this replaced meant no reader could
+rely on what a value would be.
+
+**Do not persist derived stats.** Proficiency bonus, armor class, passive perception,
+initiative modifier and spell save DC are methods on `Character`, computed from ability
+scores, level and equipment. Writing them to Mongo reintroduces the drift that removing
+them fixed. `combat_stats` stores only hit points, hit dice, death saves, speed and the
+explicit magic/feat bonuses.
