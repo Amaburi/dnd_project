@@ -11,6 +11,19 @@ import (
 // A fixed seed makes every assertion below exact rather than statistical.
 func engine(seed int64) *Engine { return NewEngine(dice.NewSeeded(seed)) }
 
+// scripted builds an engine whose dice the test states outright.
+//
+// A seeded roller is repeatable but not controllable: a test needing a hit had
+// to hope the seed obliged, and the ones that did not were skipped. Naming the
+// faces makes the outcome part of the test rather than a lucky accident.
+func scripted(faces ...int) *Engine { return NewEngine(dice.NewScripted(faces...)) }
+
+// Faces that force an outcome whatever the modifiers are.
+const (
+	faceCriticalHit = 20 // always hits, whatever the AC
+	faceFumble      = 1  // always misses, whatever the bonus
+)
+
 func rogue() *models.Character {
 	c := &models.Character{
 		Name: "Thistle", Type: models.CharacterPlayer,
@@ -200,15 +213,23 @@ func TestAttackHonoursTargetResistance(t *testing.T) {
 }
 
 func TestAttackAgainstImmuneTargetDealsNothing(t *testing.T) {
-	e := engine(7)
+	// A natural 20 hits regardless of AC, and maximum damage dice make the
+	// immunity the only reason nothing lands.
+	e := scripted(faceCriticalHit, 8)
 	c := rogue()
 
 	target := dummy(5, 50)
 	target.Affinities = models.DamageAffinities{Immunities: []models.DamageType{models.DamagePiercing}}
 
-	result, _ := e.WeaponAttack(c, rapier(), target, models.RollNormal)
+	result, err := e.WeaponAttack(c, rapier(), target, models.RollNormal)
+	if err != nil {
+		t.Fatalf("WeaponAttack: %v", err)
+	}
 	if !result.Hit() {
-		t.Skip("this seed missed; the assertion needs a hit")
+		t.Fatalf("a natural 20 missed: %s", result.Summary())
+	}
+	if result.Damage.Rolled <= 0 {
+		t.Fatal("the damage dice rolled nothing, so immunity proves nothing")
 	}
 	if result.Damage.Dealt != 0 {
 		t.Errorf("an immune target lost %d hit points", result.Damage.Dealt)
@@ -220,16 +241,16 @@ func TestAttackAgainstImmuneTargetDealsNothing(t *testing.T) {
 
 // Dropping a monster to 0 kills it; the result says so.
 func TestAttackThatKills(t *testing.T) {
-	e := engine(8)
+	e := scripted(faceCriticalHit, 8)
 	c := rogue()
-	target := dummy(5, 1) // one hit point
+	target := dummy(5, 1) // one hit point, and it does not make death saves
 
 	result, err := e.WeaponAttack(c, rapier(), target, models.RollNormal)
 	if err != nil {
 		t.Fatalf("WeaponAttack: %v", err)
 	}
 	if !result.Hit() {
-		t.Skip("this seed missed; the assertion needs a hit")
+		t.Fatalf("a natural 20 missed: %s", result.Summary())
 	}
 	if result.TargetStatus != models.CombatantDead {
 		t.Errorf("target status = %s, want dead", result.TargetStatus)
@@ -320,13 +341,18 @@ func TestFactsCoverTheOutcome(t *testing.T) {
 // A miss still supplies every damage key, so a narration template never fails
 // to build for want of a variable.
 func TestFactsAreCompleteOnAMiss(t *testing.T) {
-	e := engine(11)
+	// A natural 1 misses whatever the bonus, so the miss is stated rather
+	// than hoped for.
+	e := scripted(faceFumble)
 	c := rogue()
-	target := dummy(40, 40)
+	target := dummy(5, 40)
 
-	attack, _ := e.WeaponAttack(c, rapier(), target, models.RollNormal)
+	attack, err := e.WeaponAttack(c, rapier(), target, models.RollNormal)
+	if err != nil {
+		t.Fatalf("WeaponAttack: %v", err)
+	}
 	if attack.Hit() {
-		t.Skip("this seed hit; the assertion needs a miss")
+		t.Fatalf("a natural 1 hit: %s", attack.Summary())
 	}
 
 	facts := attack.Facts()

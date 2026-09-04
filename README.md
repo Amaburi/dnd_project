@@ -97,6 +97,39 @@ dnd-project/
 - `PUT /api/v1/campaigns/:id/monsters/:monster_id` - Update statblock
 - `DELETE /api/v1/campaigns/:id/monsters/:monster_id` - Delete statblock
 
+### Play
+- `POST /api/v1/campaigns/:id/actions` - One player turn: parse, resolve, persist, narrate, log
+
+```json
+{ "character_id": "...", "input": "I stab the goblin", "scene": "a damp cellar" }
+```
+
+### Combat
+- `POST /api/v1/campaigns/:id/encounters` - Create encounter (attached to the active session)
+- `GET /api/v1/campaigns/:id/encounters` - List encounters
+- `GET /api/v1/campaigns/:id/encounters/active` - The fight under way
+- `GET|DELETE /api/v1/campaigns/:id/encounters/:encounter_id` - Get or delete
+- `GET /api/v1/campaigns/:id/encounters/:encounter_id/stats` - After-action summary
+- `POST /api/v1/campaigns/:id/encounters/:encounter_id/combatants` - Add a character or monster
+- `POST /api/v1/campaigns/:id/encounters/:encounter_id/initiative` - Roll initiative and begin
+- `POST /api/v1/campaigns/:id/encounters/:encounter_id/next-turn` - Advance (ends the fight if decided)
+- `POST /api/v1/campaigns/:id/encounters/:encounter_id/end` - End with an outcome
+
+### Sessions
+- `POST /api/v1/campaigns/:id/sessions` - Create session (number auto-assigned)
+- `GET /api/v1/campaigns/:id/sessions` - List sessions, newest first
+- `GET /api/v1/campaigns/:id/sessions/active` - The session currently in progress
+- `GET /api/v1/campaigns/:id/sessions/:session_id` - Get session
+- `PUT /api/v1/campaigns/:id/sessions/:session_id` - Update session
+- `DELETE /api/v1/campaigns/:id/sessions/:session_id` - Delete session and its events
+- `POST /api/v1/campaigns/:id/sessions/:session_id/start` - Start (closes any other open session)
+- `POST /api/v1/campaigns/:id/sessions/:session_id/end` - End
+
+### Story Events (append-only log)
+- `POST /api/v1/campaigns/:id/sessions/:session_id/events` - Append an event
+- `GET /api/v1/campaigns/:id/sessions/:session_id/events` - Session log (`?type=` filter)
+- `GET /api/v1/campaigns/:id/events/recent` - Recent events plus a rendered context block (`?limit=`)
+
 ### Health Check
 - `GET /health` - API health status
 

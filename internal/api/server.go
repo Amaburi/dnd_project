@@ -28,6 +28,9 @@ type Server struct {
 	campaignHandler  *handlers.CampaignHandler
 	characterHandler *handlers.CharacterHandler
 	monsterHandler   *handlers.MonsterHandler
+	sessionHandler   *handlers.SessionHandler
+	actionHandler    *handlers.ActionHandler
+	combatHandler    *handlers.CombatHandler
 }
 
 // NewServer creates a new API server
@@ -36,6 +39,9 @@ func NewServer(
 	campaignHandler *handlers.CampaignHandler,
 	characterHandler *handlers.CharacterHandler,
 	monsterHandler *handlers.MonsterHandler,
+	sessionHandler *handlers.SessionHandler,
+	actionHandler *handlers.ActionHandler,
+	combatHandler *handlers.CombatHandler,
 ) *Server {
 	// Honour the configured environment instead of pinning release mode, so
 	// app.debug actually changes anything.
@@ -59,6 +65,9 @@ func NewServer(
 		campaignHandler:  campaignHandler,
 		characterHandler: characterHandler,
 		monsterHandler:   monsterHandler,
+		sessionHandler:   sessionHandler,
+		actionHandler:    actionHandler,
+		combatHandler:    combatHandler,
 	}
 
 	srv.setupMiddleware()
@@ -110,6 +119,37 @@ func (s *Server) setupRoutes() {
 		v1.GET("/campaigns/:id/monsters/:monster_id", s.monsterHandler.GetMonster)
 		v1.PUT("/campaigns/:id/monsters/:monster_id", s.monsterHandler.UpdateMonster)
 		v1.DELETE("/campaigns/:id/monsters/:monster_id", s.monsterHandler.DeleteMonster)
+
+		// Session routes. "active" is registered before ":session_id" is
+		// reached by any request that could match both.
+		v1.POST("/campaigns/:id/sessions", s.sessionHandler.CreateSession)
+		v1.GET("/campaigns/:id/sessions", s.sessionHandler.ListSessions)
+		v1.GET("/campaigns/:id/sessions/active", s.sessionHandler.GetActiveSession)
+		v1.GET("/campaigns/:id/sessions/:session_id", s.sessionHandler.GetSession)
+		v1.PUT("/campaigns/:id/sessions/:session_id", s.sessionHandler.UpdateSession)
+		v1.DELETE("/campaigns/:id/sessions/:session_id", s.sessionHandler.DeleteSession)
+		v1.POST("/campaigns/:id/sessions/:session_id/start", s.sessionHandler.StartSession)
+		v1.POST("/campaigns/:id/sessions/:session_id/end", s.sessionHandler.EndSession)
+
+		// Story events: the append-only log of what happened.
+		v1.POST("/campaigns/:id/sessions/:session_id/events", s.sessionHandler.AppendEvent)
+		v1.GET("/campaigns/:id/sessions/:session_id/events", s.sessionHandler.ListEvents)
+		v1.GET("/campaigns/:id/events/recent", s.sessionHandler.RecentEvents)
+
+		// One player action, end to end: parse, resolve, persist, narrate, log.
+		v1.POST("/campaigns/:id/actions", s.actionHandler.TakeAction)
+
+		// Combat encounters: initiative, turn order and the fight's own log.
+		v1.POST("/campaigns/:id/encounters", s.combatHandler.CreateEncounter)
+		v1.GET("/campaigns/:id/encounters", s.combatHandler.ListEncounters)
+		v1.GET("/campaigns/:id/encounters/active", s.combatHandler.GetActiveEncounter)
+		v1.GET("/campaigns/:id/encounters/:encounter_id", s.combatHandler.GetEncounter)
+		v1.DELETE("/campaigns/:id/encounters/:encounter_id", s.combatHandler.DeleteEncounter)
+		v1.GET("/campaigns/:id/encounters/:encounter_id/stats", s.combatHandler.EncounterStats)
+		v1.POST("/campaigns/:id/encounters/:encounter_id/combatants", s.combatHandler.AddCombatant)
+		v1.POST("/campaigns/:id/encounters/:encounter_id/initiative", s.combatHandler.RollInitiative)
+		v1.POST("/campaigns/:id/encounters/:encounter_id/next-turn", s.combatHandler.NextTurn)
+		v1.POST("/campaigns/:id/encounters/:encounter_id/end", s.combatHandler.EndEncounter)
 	}
 }
 

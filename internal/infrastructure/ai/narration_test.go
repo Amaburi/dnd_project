@@ -4,6 +4,8 @@ import (
 	"context"
 	"strings"
 	"testing"
+
+	"github.com/dnd-campaign/manager/internal/domain/models"
 )
 
 // A representative Facts map, the shape rules.AttackResult.Facts() produces.
@@ -167,13 +169,27 @@ func TestNarrationStyleHasDefaults(t *testing.T) {
 // Every template in defaultPrompts must be reachable from a Service method: an
 // uncallable prompt drifts out of date unnoticed.
 func TestEveryTemplateHasACaller(t *testing.T) {
-	service, _ := NewStubService(`{"action":"narrative","confidence":"high"}`, "prose", "prose",
-		"prose", "prose", "prose", "prose", "prose", "prose")
+	// Each call gets its own reply, so the two JSON templates are answered
+	// with JSON and the rest with prose.
+	service, stub := NewStubService()
 	ctx := context.Background()
 
 	calls := map[string]func() error{
 		"intent_extraction": func() error {
+			stub.Replies = []string{`{"action":"narrative","confidence":"high"}`}
+			stub.Requests = nil
 			_, err := service.ExtractIntent(ctx, &IntentRequest{PlayerInput: "look", Options: testOptions()})
+			return err
+		},
+		"enemy_tactics": func() error {
+			stub.Replies = []string{`{"action":"Scimitar","target":"Thistle","rationale":"nearest"}`}
+			stub.Requests = nil
+			_, err := service.ChooseTactics(ctx, &TacticsRequest{
+				Monster: tacticsMonster(),
+				Self:    testCombatant("Goblin", "enemy", 7),
+				Enemies: []models.Combatant{testCombatant("Thistle", "player", 30)},
+				Round:   1,
+			})
 			return err
 		},
 		"action_narration": func() error {
@@ -215,6 +231,10 @@ func TestEveryTemplateHasACaller(t *testing.T) {
 		if !ok {
 			t.Errorf("template %q has no Service method; it can never be used", name)
 			continue
+		}
+		if _, isJSON := map[string]bool{"intent_extraction": true, "enemy_tactics": true}[name]; !isJSON {
+			stub.Replies = []string{"prose"}
+			stub.Requests = nil
 		}
 		if err := call(); err != nil {
 			t.Errorf("%s: %v", name, err)
@@ -264,4 +284,23 @@ func TestSceneNarratorHasNoRulesAuthority(t *testing.T) {
 			t.Errorf("the narrator prompt is missing %q", want)
 		}
 	}
+}
+
+// testCombatant builds a minimal combatant for tactics tests.
+func testCombatant(name, kind string, hp int) models.Combatant {
+	return models.Combatant{
+		CombatantID: name, Name: name, Type: kind, ArmorClass: 14,
+		HitPoints: models.HitPoints{Current: hp, Maximum: hp},
+		Status:    models.CombatantActive,
+	}
+}
+
+func tacticsMonster() *models.Monster {
+	for _, m := range models.SRDMonsters() {
+		if m.MonsterID == "srd_goblin" {
+			copy := m
+			return &copy
+		}
+	}
+	panic("goblin missing")
 }

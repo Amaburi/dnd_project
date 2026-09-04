@@ -31,6 +31,11 @@ func (c *Client) CreateIndexes(ctx context.Context) error {
 		return fmt.Errorf("failed to create session indexes: %w", err)
 	}
 
+	// Encounter indexes
+	if err := c.createEncounterIndexes(ctx); err != nil {
+		return fmt.Errorf("failed to create encounter indexes: %w", err)
+	}
+
 	// Story events indexes
 	if err := c.createStoryEventIndexes(ctx); err != nil {
 		return fmt.Errorf("failed to create story event indexes: %w", err)
@@ -122,6 +127,40 @@ func (c *Client) createSessionIndexes(ctx context.Context) error {
 				{Key: "session_number", Value: -1},
 			},
 		},
+		{
+			// Finding the one session in progress is on the hot path.
+			Keys: bson.D{
+				{Key: "campaign_id", Value: 1},
+				{Key: "status", Value: 1},
+			},
+		},
+	}
+
+	_, err := coll.Indexes().CreateMany(ctx, indexes)
+	return err
+}
+
+func (c *Client) createEncounterIndexes(ctx context.Context) error {
+	coll := c.Database().Collection(string(CombatEncounters))
+
+	indexes := []mongo.IndexModel{
+		{
+			Keys:    bson.D{{Key: "encounter_id", Value: 1}},
+			Options: options.Index().SetUnique(true),
+		},
+		{
+			Keys: bson.D{
+				{Key: "campaign_id", Value: 1},
+				{Key: "session_id", Value: 1},
+			},
+		},
+		{
+			// Finding the fight under way is on the hot path.
+			Keys: bson.D{
+				{Key: "campaign_id", Value: 1},
+				{Key: "combat_state.phase", Value: 1},
+			},
+		},
 	}
 
 	_, err := coll.Indexes().CreateMany(ctx, indexes)
@@ -137,11 +176,25 @@ func (c *Client) createStoryEventIndexes(ctx context.Context) error {
 			Options: options.Index().SetUnique(true),
 		},
 		{
+			// Unique so two writers cannot take the same position in a
+			// session's log: AppendEvent relies on the collision to retry
+			// rather than silently interleaving events.
 			Keys: bson.D{
 				{Key: "campaign_id", Value: 1},
 				{Key: "session_id", Value: 1},
 				{Key: "sequence_number", Value: 1},
 			},
+			Options: options.Index().SetUnique(true),
+		},
+		{
+			// Recent-events queries sort by time across a whole campaign.
+			Keys: bson.D{
+				{Key: "campaign_id", Value: 1},
+				{Key: "timestamp", Value: -1},
+			},
+		},
+		{
+			Keys: bson.D{{Key: "event_type", Value: 1}},
 		},
 	}
 

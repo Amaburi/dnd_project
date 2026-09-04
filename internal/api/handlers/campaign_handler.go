@@ -16,6 +16,9 @@ type CampaignHandler struct {
 	// its children with it instead of orphaning them.
 	characterRepo *mongodb.CharacterRepository
 	monsterRepo   *mongodb.MonsterRepository
+	sessionRepo   *mongodb.SessionRepository
+	eventRepo     *mongodb.StoryEventRepository
+	encounterRepo *mongodb.EncounterRepository
 }
 
 // NewCampaignHandler creates a new campaign handler
@@ -23,11 +26,17 @@ func NewCampaignHandler(
 	campaignRepo *mongodb.CampaignRepository,
 	characterRepo *mongodb.CharacterRepository,
 	monsterRepo *mongodb.MonsterRepository,
+	sessionRepo *mongodb.SessionRepository,
+	eventRepo *mongodb.StoryEventRepository,
+	encounterRepo *mongodb.EncounterRepository,
 ) *CampaignHandler {
 	return &CampaignHandler{
 		campaignRepo:  campaignRepo,
 		characterRepo: characterRepo,
 		monsterRepo:   monsterRepo,
+		sessionRepo:   sessionRepo,
+		eventRepo:     eventRepo,
+		encounterRepo: encounterRepo,
 	}
 }
 
@@ -151,6 +160,19 @@ func (h *CampaignHandler) DeleteCampaign(c *gin.Context) {
 		return
 	}
 	if err := h.monsterRepo.DeleteMonstersByCampaign(ctx, campaign.CampaignID); err != nil {
+		respondRepoError(c, err)
+		return
+	}
+	// Events before sessions: an event whose session is gone is unreadable.
+	if err := h.eventRepo.DeleteEventsByCampaign(ctx, campaign.CampaignID); err != nil {
+		respondRepoError(c, err)
+		return
+	}
+	if err := h.encounterRepo.DeleteEncountersByCampaign(ctx, campaign.CampaignID); err != nil {
+		respondRepoError(c, err)
+		return
+	}
+	if err := h.sessionRepo.DeleteSessionsByCampaign(ctx, campaign.CampaignID); err != nil {
 		respondRepoError(c, err)
 		return
 	}

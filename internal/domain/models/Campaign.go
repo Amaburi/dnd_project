@@ -1,6 +1,8 @@
 package models
 
 import (
+	"fmt"
+	"strings"
 	"time"
 
 	"go.mongodb.org/mongo-driver/bson/primitive"
@@ -326,14 +328,52 @@ func (c *Combatant) Heal(amount int) {
 	}
 }
 
+// CombatPhase is where an encounter is in its lifecycle.
+//
+// Rounds and turns alone could not say whether initiative had been rolled yet,
+// so every caller had to infer it from whether Round was zero.
+type CombatPhase string
+
+const (
+	PhaseNotStarted CombatPhase = "not_started"
+	PhaseActive     CombatPhase = "active"
+	PhaseEnded      CombatPhase = "ended"
+)
+
+// CombatantSide separates the party from what it is fighting.
+type CombatantSide string
+
+const (
+	SideParty CombatantSide = "party"
+	SideFoes  CombatantSide = "foes"
+)
+
+// Side returns which side a combatant fights on. Players and friendly NPCs are
+// the party; everything else opposes it.
+func (c *Combatant) Side() CombatantSide {
+	if c.Type == "enemy" {
+		return SideFoes
+	}
+	return SideParty
+}
+
+// IsDown reports whether a combatant can no longer act.
+func (c *Combatant) IsDown() bool {
+	return c.Status == CombatantDead ||
+		c.Status == CombatantDying ||
+		c.Status == CombatantStable ||
+		c.Status == CombatantUnconscious
+}
+
 // CombatState tracks the current state of combat
 type CombatState struct {
-	Round                 int        `json:"round" bson:"round"`
-	Turn                  int        `json:"turn" bson:"turn"`
-	CombatStartedAt       time.Time  `json:"combat_started_at" bson:"combat_started_at"`
-	CombatEndedAt         *time.Time `json:"combat_ended_at" bson:"combat_ended_at"`
-	DurationRounds        int        `json:"duration_rounds" bson:"duration_rounds"`
-	EnvironmentConditions []string   `json:"environment_conditions" bson:"environment_conditions"`
+	Phase                 CombatPhase `json:"phase" bson:"phase"`
+	Round                 int         `json:"round" bson:"round"`
+	Turn                  int         `json:"turn" bson:"turn"`
+	CombatStartedAt       time.Time   `json:"combat_started_at" bson:"combat_started_at"`
+	CombatEndedAt         *time.Time  `json:"combat_ended_at" bson:"combat_ended_at"`
+	DurationRounds        int         `json:"duration_rounds" bson:"duration_rounds"`
+	EnvironmentConditions []string    `json:"environment_conditions" bson:"environment_conditions"`
 }
 
 // Turn represents a single turn in combat
@@ -444,4 +484,36 @@ type AIContext struct {
 	Content     string             `json:"content" bson:"content"`
 	CreatedAt   time.Time          `json:"created_at" bson:"created_at"`
 	UpdatedAt   time.Time          `json:"updated_at" bson:"updated_at"`
+}
+
+// NarrativeContext renders events as the recent-history block a prompt takes.
+//
+// Prompts want a few readable lines, not a JSON dump: a model given the whole
+// event structure spends its attention on the shape instead of the story.
+func NarrativeContext(events []*StoryEvent) string {
+	var b strings.Builder
+	for _, event := range events {
+		line := strings.TrimSpace(event.Narrative.AIGeneratedText)
+		if line == "" {
+			line = strings.TrimSpace(event.Trigger.PlayerInput)
+		}
+		if line == "" {
+			line = strings.TrimSpace(event.Narrative.DMInterpretation)
+		}
+		if line == "" {
+			continue
+		}
+
+		if b.Len() > 0 {
+			b.WriteString("\n")
+		}
+		fmt.Fprintf(&b, "- %s", line)
+	}
+
+	// An empty history must read as a sentence: a blank value in a prompt
+	// reads as an invitation to invent a past.
+	if b.Len() == 0 {
+		return "nothing has happened yet"
+	}
+	return b.String()
 }

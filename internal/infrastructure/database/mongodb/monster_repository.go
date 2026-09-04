@@ -245,3 +245,23 @@ func (r *MonsterRepository) SeedSRDMonsters(ctx context.Context, campaignID stri
 	}
 	return seeded, nil
 }
+
+// UpdateHitPoints writes a monster's hit points back after combat.
+//
+// Damage that is not persisted is damage that did not happen: without this a
+// creature heals to full between turns and the event log and the game state
+// stop agreeing.
+func (r *MonsterRepository) UpdateHitPoints(ctx context.Context, campaignID, monsterID string, hp models.HitPoints) error {
+	collection := r.client.Database().Collection(string(Monsters))
+	result, err := collection.UpdateOne(ctx,
+		bson.M{"campaign_id": campaignID, "monster_id": monsterID},
+		bson.M{"$set": bson.M{"hit_points": hp, "updated_at": time.Now().UTC()}},
+	)
+	if err != nil {
+		return fmt.Errorf("failed to update monster hit points: %w", err)
+	}
+	if result.MatchedCount == 0 {
+		return models.NotFound("monster")
+	}
+	return nil
+}

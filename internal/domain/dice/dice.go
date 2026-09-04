@@ -140,13 +140,22 @@ func (r Result) String() string {
 	}
 }
 
-// Roller produces random rolls.
+// source produces a number in [0, n), which is the one thing a roller needs.
 //
-// A Roller is safe for concurrent use. Seed one explicitly with NewSeeded to
-// make a test deterministic instead of statistical.
+// It exists so the faces can come from somewhere other than a generator: see
+// NewScripted, which lets a test state its dice instead of hoping a seed
+// obliges.
+type source interface {
+	Intn(n int) int
+}
+
+// Roller produces rolls.
+//
+// A Roller is safe for concurrent use. NewSeeded makes a sequence repeatable;
+// NewScripted makes it chosen.
 type Roller struct {
 	mu  sync.Mutex
-	rng *rand.Rand
+	src source
 }
 
 // New returns a Roller seeded from the operating system.
@@ -162,14 +171,15 @@ func New() *Roller {
 // NewSeeded returns a Roller with a fixed seed, so a sequence of rolls repeats
 // exactly. Tests use this; play does not.
 func NewSeeded(seed int64) *Roller {
-	return &Roller{rng: rand.New(rand.NewSource(seed))} //nolint:gosec // not cryptographic
+	rng := rand.New(rand.NewSource(seed)) //nolint:gosec // not cryptographic
+	return &Roller{src: rng}
 }
 
 // die rolls a single die of the given size.
 func (r *Roller) die(sides int) int {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	return r.rng.Intn(sides) + 1
+	return r.src.Intn(sides) + 1
 }
 
 // RollExpression rolls a parsed expression.

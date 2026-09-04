@@ -11,6 +11,10 @@ import (
 
 	"github.com/dnd-campaign/manager/internal/api"
 	"github.com/dnd-campaign/manager/internal/api/handlers"
+	"github.com/dnd-campaign/manager/internal/application/turn"
+	"github.com/dnd-campaign/manager/internal/domain/dice"
+	"github.com/dnd-campaign/manager/internal/domain/rules"
+	"github.com/dnd-campaign/manager/internal/infrastructure/ai"
 	"github.com/dnd-campaign/manager/internal/infrastructure/config"
 	"github.com/dnd-campaign/manager/internal/infrastructure/database/mongodb"
 	"github.com/rs/zerolog"
@@ -66,12 +70,50 @@ func main() {
 	campaignRepo := mongodb.NewCampaignRepository(mongoClient)
 	characterRepo := mongodb.NewCharacterRepository(mongoClient)
 	monsterRepo := mongodb.NewMonsterRepository(mongoClient)
+	sessionRepo := mongodb.NewSessionRepository(mongoClient)
+	// The event repository writes through the session repository so a logged
+	// roll or AI call also lands in the session's running totals.
+	eventRepo := mongodb.NewStoryEventRepository(mongoClient, sessionRepo)
+	encounterRepo := mongodb.NewEncounterRepository(mongoClient)
+
+	// One roller for the process: seeded from the OS, shared by everything
+	// that needs randomness.
+	roller := dice.New()
+
+	// The AI service and rules engine behind the turn endpoint. A missing key
+	// is fatal here rather than a surprise on the first player action.
+	aiService, err := ai.NewService(ai.ClientConfig{
+		Provider:   cfg.AI.Provider,
+		APIKey:     cfg.AI.APIKey,
+		BaseURL:    cfg.AI.BaseURL,
+		Model:      cfg.AI.Model,
+		Timeout:    cfg.AI.Timeout,
+		MaxRetries: cfg.AI.MaxRetries,
+		Pricing: ai.Pricing{
+			PromptUSDPerMillion:     cfg.AI.Pricing.PromptUSDPerMillion,
+			CompletionUSDPerMillion: cfg.AI.Pricing.CompletionUSDPerMillion,
+		},
+	})
+	if err != nil {
+		logger.Fatal().Err(err).Msg("Failed to create the AI service")
+	}
+	defer aiService.Close()
+
+	turnService := turn.NewService(
+		characterRepo, monsterRepo, sessionRepo, eventRepo,
+		aiService, rules.NewEngine(roller),
+	)
 
 	// Initialize handlers. Each needs the other's repository: campaigns cascade
 	// their characters on delete, characters resolve their campaign by _id.
-	campaignHandler := handlers.NewCampaignHandler(campaignRepo, characterRepo, monsterRepo)
+	campaignHandler := handlers.NewCampaignHandler(
+		campaignRepo, characterRepo, monsterRepo, sessionRepo, eventRepo, encounterRepo)
 	characterHandler := handlers.NewCharacterHandler(characterRepo, campaignRepo)
 	monsterHandler := handlers.NewMonsterHandler(monsterRepo, campaignRepo)
+	sessionHandler := handlers.NewSessionHandler(sessionRepo, eventRepo, campaignRepo)
+	actionHandler := handlers.NewActionHandler(turnService, campaignRepo)
+	combatHandler := handlers.NewCombatHandler(
+		encounterRepo, characterRepo, monsterRepo, sessionRepo, campaignRepo, roller)
 
 	// Create API server
 	server := api.NewServer(api.ServerConfig{
@@ -81,7 +123,7 @@ func main() {
 		ReadTimeout:  15 * time.Second,
 		WriteTimeout: 15 * time.Second,
 		IdleTimeout:  60 * time.Second,
-	}, campaignHandler, characterHandler, monsterHandler)
+	}, campaignHandler, characterHandler, monsterHandler, sessionHandler, actionHandler, combatHandler)
 
 	// Start server in goroutine
 	go func() {

@@ -112,11 +112,11 @@ Implement session management, character creation, and AI-ready architecture.
 ### Deliverables
 
 #### Week 4: Sessions & Story Events
-- [ ] Implement Session CRUD endpoints
-- [ ] Create Session model and repository
-- [ ] Implement Story Events model
-- [ ] Add session-campaign relationships
-- [ ] Implement basic story event logging
+- [x] Implement Session CRUD endpoints
+- [x] Create Session model and repository
+- [x] Implement Story Events model
+- [x] Add session-campaign relationships
+- [x] Implement basic story event logging
 
 **Milestone**: Can track game sessions within campaigns
 
@@ -130,20 +130,20 @@ Implement session management, character creation, and AI-ready architecture.
 **Milestone**: Full character sheet management
 
 #### Week 6: Dice System
-- [ ] Implement dice expression parser
-- [ ] Create dice roller with advantage/disadvantage
+- [x] Implement dice expression parser
+- [x] Create dice roller with advantage/disadvantage
 - [ ] Add probability calculations
-- [ ] Implement dice history tracking
+- [x] Implement dice history tracking
 - [ ] Create dice API endpoints
 
 **Milestone**: Fully functional dice rolling system
 
 #### Week 7: Rules Engine Foundation
-- [ ] Implement ability check resolution
-- [ ] Create saving throw system
-- [ ] Add skill check resolution
-- [ ] Implement proficiency handling
-- [ ] Add rules engine core
+- [x] Implement ability check resolution
+- [x] Create saving throw system
+- [x] Add skill check resolution
+- [x] Implement proficiency handling
+- [x] Add rules engine core
 
 **Milestone**: Core D&D 5e mechanics working
 
@@ -220,19 +220,19 @@ Implement DeepSeek AI integration for narrative generation and DM functionality.
 ### Deliverables
 
 #### Week 8: AI Infrastructure
-- [ ] Set up DeepSeek API client
-- [ ] Implement prompt builder
-- [ ] Create system prompt templates
-- [ ] Add AI response parsing
-- [ ] Configure temperature/parameter tuning
+- [x] Set up AI client (provider-agnostic; Groq by default, not only DeepSeek)
+- [x] Implement prompt builder
+- [x] Create system prompt templates
+- [x] Add AI response parsing
+- [x] Configure temperature/parameter tuning
 
 **Milestone**: Can make API calls to DeepSeek
 
 #### Week 9: Narrative Generation
-- [ ] Implement scene description generation
-- [ ] Create action interpretation
-- [ ] Add result narrative generation
-- [ ] Implement style customization
+- [x] Implement scene description generation
+- [x] Create action interpretation
+- [x] Add result narrative generation
+- [x] Implement style customization
 - [ ] Add narrative caching
 
 **Milestone**: AI generates compelling narratives
@@ -351,38 +351,38 @@ Implement full combat encounter management with AI integration.
 ### Deliverables
 
 #### Week 13: Combat Foundation
-- [ ] Create Combat model
-- [ ] Implement initiative tracking
-- [ ] Add combatant management
-- [ ] Create turn order system
-- [ ] Implement combat state machine
+- [x] Create Combat model
+- [x] Implement initiative tracking
+- [x] Add combatant management
+- [x] Create turn order system
+- [x] Implement combat state machine
 
 **Milestone**: Basic combat tracking working
 
 #### Week 14: Combat Actions
-- [ ] Implement attack rolls
-- [ ] Add damage calculation
-- [ ] Create spell casting in combat
-- [ ] Implement conditions/effects
-- [ ] Add movement mechanics
+- [x] Implement attack rolls
+- [x] Add damage calculation
+- [x] Create spell casting in combat
+- [x] Implement conditions/effects
+- [x] Add movement mechanics
 
 **Milestone**: Full combat action resolution
 
 #### Week 15: Combat AI Integration
-- [ ] AI enemy tactics generation
-- [ ] Combat narration integration
-- [ ] Enemy action interpretation
+- [x] AI enemy tactics generation
+- [x] Combat narration integration
+- [x] Enemy action interpretation
 - [ ] Combat outcome prediction
-- [ ] Victory/defeat handling
+- [x] Victory/defeat handling
 
 **Milestone**: AI runs combat encounters
 
 #### Week 16: Combat Polish
-- [ ] Combat logging
-- [ ] Combat history tracking
-- [ ] Damage/healing formulas
-- [ ] Death and resurrection
-- [ ] Combat analytics
+- [x] Combat logging
+- [x] Combat history tracking
+- [x] Damage/healing formulas
+- [x] Death and resurrection
+- [x] Combat analytics
 
 **Milestone**: Complete combat system
 
