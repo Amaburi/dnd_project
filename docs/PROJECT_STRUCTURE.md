@@ -1,5 +1,11 @@
 # Project Structure & Dependencies
 
+> **This document is aspirational.** It describes the intended layout, not what exists.
+> Several directories below (`pkg/`, `internal/application/`, `test/`, `cmd/migrator`,
+> `cmd/seed`) have not been created, and there is no `docker-compose.yml` in the repo.
+> Check the tree before assuming a package is there. Redis and WebSocket entries were
+> removed on 2026-09-04 — see ARCHITECTURE.md §0.
+
 ## Overview
 
 This document outlines the recommended Go project structure for the AI D&D Campaign Manager, including package organization, dependencies, and build configuration.
@@ -64,8 +70,6 @@ dnd-project/
 │   │   │   ├── deepseek_client.go
 │   │   │   ├── prompt_builder.go
 │   │   │   └── context_manager.go
-│   │   ├── cache/
-│   │   │   └── redis_client.go
 │   │   └── config/
 │   │       └── config.go
 │   │
@@ -138,8 +142,6 @@ require (
     // MongoDB Driver
     go.mongodb.org/mongo-driver v1.13.1
     
-    // Redis Cache
-    github.com/redis/go-redis/v9 v9.3.1
     
     // Configuration
     github.com/spf13/viper v1.18.2
@@ -178,7 +180,6 @@ require (
 |------------|---------|---------|
 | **gin** | v1.9.1 | HTTP web framework |
 | **mongo-driver** | v1.13.1 | MongoDB driver |
-| **go-redis** | v9.3.1 | Redis client for caching |
 | **viper** | v1.18.2 | Configuration management |
 | **google/uuid** | v1.5.0 | UUID generation |
 | **zerolog** | v1.31.0 | Structured logging |
@@ -248,7 +249,6 @@ internal/domain/
 internal/infrastructure/
 ├── database/    # Data access layer
 ├── ai/         # AI service integration
-├── cache/      # Caching layer
 └── config/     # Configuration loading
 ```
 
@@ -350,20 +350,13 @@ mongodb:
   max_pool_size: 100
   min_pool_size: 10
 
-# Redis Configuration
-redis:
-  host: "localhost"
-  port: 6379
-  password: "${REDIS_PASSWORD}"
-  db: 0
-  pool_size: 10
-
-# DeepSeek AI Configuration
-deepseek:
-  api_key: "${DEEPSEEK_API_KEY}"
-  base_url: "https://api.deepseek.com"
-  model: "deepseek-chat"
-  timeout: 30
+# AI provider: any OpenAI-compatible /chat/completions endpoint
+ai:
+  provider: "groq"
+  api_key: "${GROQ_API_KEY}"
+  base_url: "https://api.groq.com/openai/v1"
+  model: "llama-3.3-70b-versatile"
+  timeout: "10s"
   max_retries: 3
 
 # Dice Settings
@@ -395,11 +388,10 @@ rate_limit:
 
 ```bash
 # Required
-export DEEPSEEK_API_KEY="your-api-key"
-export MONGODB_PASSWORD="your-mongo-password"
+export GROQ_API_KEY="your-api-key"     # or DEEPSEEK_API_KEY / OPENAI_API_KEY / AI_API_KEY
+export MONGODB_URI="mongodb+srv://..."
 
 # Optional
-export REDIS_PASSWORD="your-redis-password"
 export APP_ENV="production"
 export PORT="8080"
 ```
@@ -457,10 +449,8 @@ services:
     environment:
       - APP_ENV=development
       - MONGODB_HOST=mongodb
-      - REDIS_HOST=redis
     depends_on:
       - mongodb
-      - redis
     volumes:
       - ./configs:/app/configs:ro
 
@@ -476,16 +466,8 @@ services:
       - mongodb_data:/data/db
       - ./scripts/mongo-init.js:/docker-entrypoint-initdb.d/init.js:ro
 
-  redis:
-    image: redis:7-alpine
-    ports:
-      - "6379:6379"
-    volumes:
-      - redis_data:/data
-
 volumes:
   mongodb_data:
-  redis_data:
 ```
 
 ---

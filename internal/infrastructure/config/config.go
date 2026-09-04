@@ -13,8 +13,7 @@ import (
 type Config struct {
 	App       AppConfig       `mapstructure:"app"`
 	MongoDB   MongoDBConfig   `mapstructure:"mongodb"`
-	Redis     RedisConfig     `mapstructure:"redis"`
-	DeepSeek  DeepSeekConfig  `mapstructure:"deepseek"`
+	AI        AIConfig        `mapstructure:"ai"`
 	Logging   LoggingConfig   `mapstructure:"logging"`
 	RateLimit RateLimitConfig `mapstructure:"rate_limit"`
 }
@@ -39,22 +38,28 @@ type MongoDBConfig struct {
 	ConnectTimeout time.Duration `mapstructure:"connect_timeout"`
 }
 
-// RedisConfig holds Redis connection settings
-type RedisConfig struct {
-	Host     string `mapstructure:"host"`
-	Port     int    `mapstructure:"port"`
-	Password string `mapstructure:"password"`
-	DB       int    `mapstructure:"db"`
-	PoolSize int    `mapstructure:"pool_size"`
-}
-
-// DeepSeekConfig holds DeepSeek AI settings
-type DeepSeekConfig struct {
+// AIConfig holds settings for the chat-completions provider.
+//
+// Any OpenAI-compatible endpoint works -- Groq, DeepSeek, OpenAI, a local
+// server -- so the provider is chosen by BaseURL and Model rather than by
+// code. Provider is a label for logs only.
+type AIConfig struct {
+	Provider   string        `mapstructure:"provider"`
 	APIKey     string        `mapstructure:"api_key"`
 	BaseURL    string        `mapstructure:"base_url"`
 	Model      string        `mapstructure:"model"`
 	Timeout    time.Duration `mapstructure:"timeout"`
 	MaxRetries int           `mapstructure:"max_retries"`
+	Pricing    PricingConfig `mapstructure:"pricing"`
+}
+
+// PricingConfig holds the provider's token rates in USD per million tokens.
+//
+// Rates vary by provider and model and change often, so they are configured
+// rather than compiled in. Leaving both at 0 disables cost estimation.
+type PricingConfig struct {
+	PromptUSDPerMillion     float64 `mapstructure:"prompt_usd_per_million"`
+	CompletionUSDPerMillion float64 `mapstructure:"completion_usd_per_million"`
 }
 
 // LoggingConfig holds logging settings
@@ -89,13 +94,16 @@ func Load() (*Config, error) {
 
 	// AutomaticEnv only resolves keys viper already knows about, so bind the
 	// secrets explicitly -- they must work even with no config file present.
-	for key, env := range map[string]string{
-		"mongodb.uri":      "MONGODB_URI",
-		"deepseek.api_key": "DEEPSEEK_API_KEY",
-		"redis.password":   "REDIS_PASSWORD",
+	//
+	// The AI key accepts several names so switching providers does not mean
+	// renaming the variable in every shell profile and CI secret; viper takes
+	// the first one that is set.
+	for key, envs := range map[string][]string{
+		"mongodb.uri": {"MONGODB_URI"},
+		"ai.api_key":  {"GROQ_API_KEY", "DEEPSEEK_API_KEY", "OPENAI_API_KEY", "AI_API_KEY"},
 	} {
-		if err := v.BindEnv(key, env); err != nil {
-			return nil, fmt.Errorf("failed to bind %s: %w", env, err)
+		if err := v.BindEnv(append([]string{key}, envs...)...); err != nil {
+			return nil, fmt.Errorf("failed to bind %s: %w", key, err)
 		}
 	}
 
@@ -109,11 +117,11 @@ func Load() (*Config, error) {
 	v.SetDefault("mongodb.min_pool_size", 10)
 	v.SetDefault("mongodb.connect_timeout", "10s")
 
-	v.SetDefault("redis.pool_size", 10)
-
-	v.SetDefault("deepseek.model", "deepseek-chat")
-	v.SetDefault("deepseek.timeout", "30s")
-	v.SetDefault("deepseek.max_retries", 3)
+	// No default provider, base URL or model: guessing one would silently
+	// send traffic to an endpoint the operator never chose. ai.Validate
+	// rejects an incomplete configuration at startup instead.
+	v.SetDefault("ai.timeout", "30s")
+	v.SetDefault("ai.max_retries", 3)
 
 	v.SetDefault("logging.level", "debug")
 	v.SetDefault("logging.format", "json")
@@ -150,16 +158,6 @@ func Load() (*Config, error) {
 	return &cfg, nil
 }
 
-// GetMongoURI returns the MongoDB connection URI
-func (c *MongoDBConfig) GetMongoURI() string {
-	if c.Username != "" && c.Password != "" {
-		return fmt.Sprintf("mongodb://%s:%s@%s/%s?authSource=%s",
-			c.Username, c.Password, c.URI, c.Database, c.AuthSource)
-	}
-	return fmt.Sprintf("mongodb://%s/%s", c.URI, c.Database)
-}
-
-// GetRedisAddr returns the Redis address
-func (c *RedisConfig) GetRedisAddr() string {
-	return fmt.Sprintf("%s:%d", c.Host, c.Port)
-}
+// The MongoDB URI is resolved by mongodb.buildConnectionURI, which passes a
+// complete mongodb:// or mongodb+srv:// URI through untouched. There is
+// deliberately no helper here that rebuilds one from parts.

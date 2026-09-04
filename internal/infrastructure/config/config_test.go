@@ -30,14 +30,28 @@ func writeConfigDir(t *testing.T, yaml string) {
 	t.Cleanup(func() { _ = os.Chdir(prev) })
 }
 
+// clearAIKeyEnv removes every variable ai.api_key is bound to, so a key
+// present in the developer's own shell cannot mask a test's expectations.
+func clearAIKeyEnv(t *testing.T) {
+	t.Helper()
+	for _, name := range []string{"GROQ_API_KEY", "DEEPSEEK_API_KEY", "OPENAI_API_KEY", "AI_API_KEY"} {
+		t.Setenv(name, "")
+		os.Unsetenv(name)
+	}
+}
+
 const placeholderConfig = `
 mongodb:
   uri: "${MONGODB_URI}"
   database: "dnd_campaigns"
-redis:
-  password: "${REDIS_PASSWORD}"
-deepseek:
-  api_key: "${DEEPSEEK_API_KEY}"
+ai:
+  provider: "groq"
+  api_key: "${GROQ_API_KEY}"
+  base_url: "https://api.groq.com/openai/v1"
+  model: "llama-3.3-70b-versatile"
+  pricing:
+    prompt_usd_per_million: 0.59
+    completion_usd_per_million: 0.79
 `
 
 func TestLoadReadsMongoURIFromEnvironment(t *testing.T) {
@@ -54,31 +68,108 @@ func TestLoadReadsMongoURIFromEnvironment(t *testing.T) {
 	}
 }
 
-func TestLoadReadsDeepSeekKeyFromEnvironment(t *testing.T) {
+func TestLoadReadsAIKeyFromGroqEnvironment(t *testing.T) {
 	writeConfigDir(t, placeholderConfig)
-	t.Setenv("DEEPSEEK_API_KEY", "sk-test-key")
+	clearAIKeyEnv(t)
+	t.Setenv("GROQ_API_KEY", "gsk-test-key")
 
 	cfg, err := Load()
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}
 
-	if got, want := cfg.DeepSeek.APIKey, "sk-test-key"; got != want {
-		t.Errorf("DeepSeek.APIKey = %q, want %q", got, want)
+	if got, want := cfg.AI.APIKey, "gsk-test-key"; got != want {
+		t.Errorf("AI.APIKey = %q, want %q", got, want)
 	}
 }
 
-func TestLoadReadsRedisPasswordFromEnvironment(t *testing.T) {
-	writeConfigDir(t, placeholderConfig)
-	t.Setenv("REDIS_PASSWORD", "redis-secret")
+// Switching providers must not mean renaming the variable everywhere, so the
+// older DeepSeek name still resolves when no Groq key is set.
+func TestLoadAcceptsDeepSeekKeyAsFallback(t *testing.T) {
+	writeConfigDir(t, `
+mongodb:
+  uri: "${MONGODB_URI}"
+ai:
+  base_url: "https://api.deepseek.com"
+  model: "deepseek-chat"
+`)
+	clearAIKeyEnv(t)
+	t.Setenv("DEEPSEEK_API_KEY", "sk-deepseek-key")
 
 	cfg, err := Load()
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}
 
-	if got, want := cfg.Redis.Password, "redis-secret"; got != want {
-		t.Errorf("Redis.Password = %q, want %q", got, want)
+	if got, want := cfg.AI.APIKey, "sk-deepseek-key"; got != want {
+		t.Errorf("AI.APIKey = %q, want %q", got, want)
+	}
+}
+
+// GROQ_API_KEY is bound first, so it wins when several are set.
+func TestLoadPrefersGroqKeyOverFallbacks(t *testing.T) {
+	writeConfigDir(t, placeholderConfig)
+	clearAIKeyEnv(t)
+	t.Setenv("DEEPSEEK_API_KEY", "sk-deepseek-key")
+	t.Setenv("GROQ_API_KEY", "gsk-groq-key")
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+
+	if got, want := cfg.AI.APIKey, "gsk-groq-key"; got != want {
+		t.Errorf("AI.APIKey = %q, want %q", got, want)
+	}
+}
+
+func TestLoadReadsProviderRoutingAndPricing(t *testing.T) {
+	writeConfigDir(t, placeholderConfig)
+	clearAIKeyEnv(t)
+	t.Setenv("GROQ_API_KEY", "gsk-test-key")
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+
+	if got, want := cfg.AI.BaseURL, "https://api.groq.com/openai/v1"; got != want {
+		t.Errorf("AI.BaseURL = %q, want %q", got, want)
+	}
+	if got, want := cfg.AI.Model, "llama-3.3-70b-versatile"; got != want {
+		t.Errorf("AI.Model = %q, want %q", got, want)
+	}
+	if got, want := cfg.AI.Pricing.PromptUSDPerMillion, 0.59; got != want {
+		t.Errorf("prompt pricing = %v, want %v", got, want)
+	}
+	if got, want := cfg.AI.Pricing.CompletionUSDPerMillion, 0.79; got != want {
+		t.Errorf("completion pricing = %v, want %v", got, want)
+	}
+}
+
+// There is no default base URL or model: guessing one would silently send
+// traffic to an endpoint nobody chose.
+func TestLoadDoesNotInventAProvider(t *testing.T) {
+	writeConfigDir(t, `
+mongodb:
+  uri: "${MONGODB_URI}"
+`)
+	clearAIKeyEnv(t)
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+
+	if cfg.AI.BaseURL != "" {
+		t.Errorf("AI.BaseURL defaulted to %q, want empty", cfg.AI.BaseURL)
+	}
+	if cfg.AI.Model != "" {
+		t.Errorf("AI.Model defaulted to %q, want empty", cfg.AI.Model)
+	}
+	// Timeout and retries are safe to default; routing is not.
+	if cfg.AI.MaxRetries != 3 {
+		t.Errorf("AI.MaxRetries = %d, want the default 3", cfg.AI.MaxRetries)
 	}
 }
 

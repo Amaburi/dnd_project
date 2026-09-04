@@ -13,12 +13,14 @@ type Service struct {
 	config        ClientConfig
 }
 
-// NewService creates a new AI service
+// NewService creates a new AI service for the configured provider.
 func NewService(config ClientConfig) (*Service, error) {
-	client := NewDeepSeekClient(config)
+	if err := config.Validate(); err != nil {
+		return nil, err
+	}
 
 	return &Service{
-		client:        client,
+		client:        NewOpenAICompatibleClient(config),
 		promptBuilder: NewPromptBuilder(),
 		config:        config,
 	}, nil
@@ -86,7 +88,7 @@ func (s *Service) GenerateNarrative(ctx context.Context, req *NarrativeRequest) 
 	}
 
 	processingTime := time.Since(startTime)
-	cost := calculateCost(resp.Usage.TotalTokens)
+	cost := s.calculateCost(resp.Usage)
 
 	return &NarrativeResponse{
 		Narrative:      resp.Choices[0].Message.Content,
@@ -169,7 +171,7 @@ func (s *Service) GenerateNPCDialogue(ctx context.Context, req *NPCDialogueReque
 	}
 
 	processingTime := time.Since(startTime)
-	cost := calculateCost(resp.Usage.TotalTokens)
+	cost := s.calculateCost(resp.Usage)
 
 	return &NPCDialogueResponse{
 		Dialogue:       resp.Choices[0].Message.Content,
@@ -243,7 +245,7 @@ func (s *Service) InterpretDiceRoll(ctx context.Context, req *DiceInterpretation
 	}
 
 	processingTime := time.Since(startTime)
-	cost := calculateCost(resp.Usage.TotalTokens)
+	cost := s.calculateCost(resp.Usage)
 
 	return &DiceInterpretationResponse{
 		Interpretation: resp.Choices[0].Message.Content,
@@ -291,14 +293,14 @@ func (s *Service) StreamNarrative(ctx context.Context, req *NarrativeRequest) (<
 		}
 
 		// Call AI with streaming
-		streamChan, err := s.client.StreamChatCompletion(ctx, chatReq)
+		stream, err := s.client.StreamChatCompletion(ctx, chatReq)
 		if err != nil {
 			errChan <- fmt.Errorf("AI request failed: %w", err)
 			return
 		}
 
 		// Forward stream to text channel
-		for chunk := range streamChan {
+		for chunk := range stream.Chunks {
 			if len(chunk.Choices) > 0 {
 				content := chunk.Choices[0].Delta.Content
 				if content != "" {
@@ -310,6 +312,12 @@ func (s *Service) StreamNarrative(ctx context.Context, req *NarrativeRequest) (<
 				}
 			}
 		}
+
+		// A stream can fail after it opened; without this the caller would
+		// treat a truncated narrative as a complete one.
+		if err := stream.Err(); err != nil {
+			errChan <- fmt.Errorf("AI stream failed: %w", err)
+		}
 	}()
 
 	return textChan, errChan
@@ -320,9 +328,10 @@ func (s *Service) Close() error {
 	return s.client.Close()
 }
 
-// calculateCost estimates the cost based on tokens used
-// DeepSeek pricing: ~$0.14 per 1M tokens (input) and ~$0.28 per 1M tokens (output)
-// Simplified: average $0.21 per 1M tokens
-func calculateCost(tokens int) float64 {
-	return float64(tokens) * 0.21 / 1000000.0
+// calculateCost estimates the USD cost of one completion using the configured
+// provider's rates. Providers price prompt and completion tokens differently,
+// so a blended rate over total tokens misreports any request whose output
+// length differs from its input length -- which is most of them.
+func (s *Service) calculateCost(usage Usage) float64 {
+	return s.config.Pricing.Cost(usage)
 }

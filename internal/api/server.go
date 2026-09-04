@@ -12,7 +12,9 @@ import (
 
 // ServerConfig holds server configuration
 type ServerConfig struct {
+	Host         string
 	Port         int
+	Debug        bool
 	ReadTimeout  time.Duration
 	WriteTimeout time.Duration
 	IdleTimeout  time.Duration
@@ -29,13 +31,19 @@ type Server struct {
 
 // NewServer creates a new API server
 func NewServer(cfg ServerConfig, campaignHandler *handlers.CampaignHandler, characterHandler *handlers.CharacterHandler) *Server {
-	gin.SetMode(gin.ReleaseMode)
+	// Honour the configured environment instead of pinning release mode, so
+	// app.debug actually changes anything.
+	if cfg.Debug {
+		gin.SetMode(gin.DebugMode)
+	} else {
+		gin.SetMode(gin.ReleaseMode)
+	}
 	router := gin.New()
 
 	srv := &Server{
 		router: router,
 		server: &http.Server{
-			Addr:         fmt.Sprintf(":%d", cfg.Port),
+			Addr:         fmt.Sprintf("%s:%d", cfg.Host, cfg.Port),
 			Handler:      router,
 			ReadTimeout:  cfg.ReadTimeout,
 			WriteTimeout: cfg.WriteTimeout,

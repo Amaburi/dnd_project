@@ -31,8 +31,16 @@ type Config struct {
 	ConnectTimeout time.Duration
 }
 
+// defaultConnectTimeout is used when the configuration supplies none. A zero
+// timeout would build an already-expired context and fail every connection.
+const defaultConnectTimeout = 10 * time.Second
+
 // NewClient creates a new MongoDB client
 func NewClient(cfg Config) (*Client, error) {
+	if cfg.ConnectTimeout <= 0 {
+		cfg.ConnectTimeout = defaultConnectTimeout
+	}
+
 	ctx, cancel := context.WithTimeout(context.Background(), cfg.ConnectTimeout)
 	defer cancel()
 

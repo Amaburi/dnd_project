@@ -1,4 +1,7 @@
 # D&D Campaign Manager Configuration
+#
+# ${VAR} placeholders are expanded from the environment when this file is read,
+# so secrets stay in .env. See .env.example.
 
 # Application Settings
 app:
@@ -18,21 +21,34 @@ mongodb:
   min_pool_size: 10
   connect_timeout: "10s"
 
-# Redis Configuration (for caching)
-redis:
-  host: "localhost"
-  port: 6379
-  password: "${REDIS_PASSWORD}"
-  db: 0
-  pool_size: 10
+# AI provider (any OpenAI-compatible /chat/completions endpoint).
+#
+# Switching providers is a config change only -- no Go code refers to a
+# specific vendor. To move to DeepSeek instead:
+#   base_url: "https://api.deepseek.com"
+#   model: "deepseek-chat"
+#   pricing: 0.14 / 0.28
+ai:
+  provider: "groq"          # label for logs; base_url is what actually routes
+  api_key: "${GROQ_API_KEY}"
+  base_url: "https://api.groq.com/openai/v1"
 
-# DeepSeek AI Configuration
-deepseek:
-  api_key: "${DEEPSEEK_API_KEY}"
-  base_url: "https://api.deepseek.com"
-  model: "deepseek-chat"
-  timeout: "30s"
+  # Groq retires and renames models regularly. Confirm this ID is still served
+  # before relying on it:  curl -H "Authorization: Bearer $GROQ_API_KEY" \
+  #   https://api.groq.com/openai/v1/models
+  model: "llama-3.3-70b-versatile"
+
+  # Groq answers in well under a second; a long timeout only delays surfacing
+  # a genuine problem.
+  timeout: "10s"
   max_retries: 3
+
+  # USD per million tokens. Check your provider's current pricing page -- these
+  # are estimates for cost reporting only, never billing. Leave both at 0 to
+  # disable cost estimation entirely.
+  pricing:
+    prompt_usd_per_million: 0.59
+    completion_usd_per_million: 0.79
 
 # Logging Configuration
 logging:

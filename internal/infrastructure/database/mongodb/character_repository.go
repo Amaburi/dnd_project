@@ -3,6 +3,7 @@ package mongodb
 import (
 	"context"
 	"fmt"
+	"regexp"
 	"time"
 
 	"github.com/dnd-campaign/manager/internal/domain/models"
@@ -23,18 +24,30 @@ func NewCharacterRepository(client *Client) *CharacterRepository {
 	}
 }
 
+// emptyIfNil keeps optional slices out of BSON as [] rather than null, so a
+// document never alternates between missing and empty across updates.
+func emptyIfNil[T any](s []T) []T {
+	if s == nil {
+		return []T{}
+	}
+	return s
+}
+
 // CreateCharacter creates a new character
 func (r *CharacterRepository) CreateCharacter(ctx context.Context, character *models.Character) error {
 	// Validate required fields
 	if character.Name == "" {
-		return fmt.Errorf("character name is required")
+		return models.Invalid("character name is required")
 	}
 	if character.CampaignID == "" {
-		return fmt.Errorf("campaign_id is required")
+		return models.Invalid("campaign_id is required")
 	}
 	if character.Type == "" {
-		return fmt.Errorf("character type is required")
+		return models.Invalid("character type is required")
 	}
+
+	// The _id is assigned by MongoDB; a client-supplied one is ignored.
+	character.ID = primitive.NilObjectID
 
 	// Generate CharacterID if not set
 	if character.CharacterID == "" {
@@ -42,24 +55,34 @@ func (r *CharacterRepository) CreateCharacter(ctx context.Context, character *mo
 	}
 
 	// Set timestamps
-	now := primitive.NewDateTimeFromTime(time.Now())
+	now := time.Now().UTC()
 	character.CreatedAt = now
 	character.UpdatedAt = now
 
 	// Insert to MongoDB
 	collection := r.client.Database().Collection(string(Characters))
-	_, err := collection.InsertOne(ctx, character)
+	result, err := collection.InsertOne(ctx, character)
 	if err != nil {
+		if mongo.IsDuplicateKeyError(err) {
+			return models.Invalid("character_id %q already exists", character.CharacterID)
+		}
 		return fmt.Errorf("failed to insert character: %w", err)
+	}
+
+	if id, ok := result.InsertedID.(primitive.ObjectID); ok {
+		character.ID = id
 	}
 	return nil
 }
 
-// GetCharacterByID retrieves a character by ID
-func (r *CharacterRepository) GetCharacterByID(ctx context.Context, id primitive.ObjectID) (*models.Character, error) {
+// GetCharacterInCampaign retrieves a character scoped to its campaign.
+//
+// Scoping on campaign_id as well as _id is what keeps a character from being
+// readable through an unrelated campaign's URL.
+func (r *CharacterRepository) GetCharacterInCampaign(ctx context.Context, campaignID string, id primitive.ObjectID) (*models.Character, error) {
 	var character models.Character
 	collection := r.client.Database().Collection(string(Characters))
-	err := collection.FindOne(ctx, bson.M{"_id": id}).Decode(&character)
+	err := collection.FindOne(ctx, bson.M{"_id": id, "campaign_id": campaignID}).Decode(&character)
 	if err != nil {
 		if err == mongo.ErrNoDocuments {
 			return nil, nil // Not found, return nil without error
@@ -83,10 +106,10 @@ func (r *CharacterRepository) GetCharacterByCharacterID(ctx context.Context, cha
 	return &character, nil
 }
 
-// GetCharactersByCampaign gets all characters in a campaign
-func (r *CharacterRepository) GetCharactersByCampaign(ctx context.Context, campaignID string) ([]*models.Character, error) {
+// findCharacters runs a filter and decodes the result set.
+func (r *CharacterRepository) findCharacters(ctx context.Context, filter bson.M) ([]*models.Character, error) {
 	collection := r.client.Database().Collection(string(Characters))
-	cursor, err := collection.Find(ctx, bson.M{"campaign_id": campaignID})
+	cursor, err := collection.Find(ctx, filter)
 	if err != nil {
 		return nil, fmt.Errorf("failed to find characters: %w", err)
 	}
@@ -95,27 +118,25 @@ func (r *CharacterRepository) GetCharactersByCampaign(ctx context.Context, campa
 	var characters []*models.Character
 	if err = cursor.All(ctx, &characters); err != nil {
 		return nil, fmt.Errorf("failed to decode characters: %w", err)
+	}
+	if characters == nil {
+		// Encode an empty result as [] rather than null.
+		characters = []*models.Character{}
 	}
 	return characters, nil
 }
 
+// GetCharactersByCampaign gets all characters in a campaign
+func (r *CharacterRepository) GetCharactersByCampaign(ctx context.Context, campaignID string) ([]*models.Character, error) {
+	return r.findCharacters(ctx, bson.M{"campaign_id": campaignID})
+}
+
 // GetCharactersByType gets characters by type (player/npc/enemy/monster)
 func (r *CharacterRepository) GetCharactersByType(ctx context.Context, campaignID string, charType string) ([]*models.Character, error) {
-	collection := r.client.Database().Collection(string(Characters))
-	cursor, err := collection.Find(ctx, bson.M{
+	return r.findCharacters(ctx, bson.M{
 		"campaign_id": campaignID,
 		"type":        charType,
 	})
-	if err != nil {
-		return nil, fmt.Errorf("failed to find characters: %w", err)
-	}
-	defer cursor.Close(ctx)
-
-	var characters []*models.Character
-	if err = cursor.All(ctx, &characters); err != nil {
-		return nil, fmt.Errorf("failed to decode characters: %w", err)
-	}
-	return characters, nil
 }
 
 // GetPlayerCharacters gets all player characters in a campaign
@@ -130,54 +151,76 @@ func (r *CharacterRepository) GetNPCs(ctx context.Context, campaignID string) ([
 
 // GetEnemies gets all enemies in a campaign
 func (r *CharacterRepository) GetEnemies(ctx context.Context, campaignID string) ([]*models.Character, error) {
-	collection := r.client.Database().Collection(string(Characters))
-	cursor, err := collection.Find(ctx, bson.M{
+	return r.findCharacters(ctx, bson.M{
 		"campaign_id": campaignID,
 		"type":        bson.M{"$in": []string{"enemy", "monster"}},
 	})
-	if err != nil {
-		return nil, fmt.Errorf("failed to find enemies: %w", err)
-	}
-	defer cursor.Close(ctx)
-
-	var characters []*models.Character
-	if err = cursor.All(ctx, &characters); err != nil {
-		return nil, fmt.Errorf("failed to decode characters: %w", err)
-	}
-	return characters, nil
 }
 
-// UpdateCharacter updates a character
-func (r *CharacterRepository) UpdateCharacter(ctx context.Context, character *models.Character) error {
-	// Validate ID
+// UpdateCharacter updates the mutable fields of a character within a campaign.
+//
+// As with campaigns, the update document is built explicitly: $set-ing the
+// decoded struct would blank the uniquely indexed character_id, detach the
+// character from its campaign and zero created_at.
+func (r *CharacterRepository) UpdateCharacter(ctx context.Context, campaignID string, character *models.Character) error {
 	if character.ID.IsZero() {
-		return fmt.Errorf("character ID is required")
+		return models.Invalid("character ID is required")
+	}
+	if campaignID == "" {
+		return models.Invalid("campaign_id is required")
+	}
+	if character.Name == "" {
+		return models.Invalid("character name is required")
+	}
+	if character.Type == "" {
+		return models.Invalid("character type is required")
 	}
 
-	// Update timestamp
-	character.UpdatedAt = primitive.NewDateTimeFromTime(time.Now())
+	now := time.Now().UTC()
+	update := bson.M{
+		"type":                   character.Type,
+		"name":                   character.Name,
+		"player_name":            character.PlayerName,
+		"basic_info":             character.BasicInfo,
+		"ability_scores":         character.AbilityScores,
+		"derived_stats":          character.DerivedStats,
+		"skills":                 character.Skills,
+		"saving_throws":          character.SavingThrows,
+		"inventory":              emptyIfNil(character.Inventory),
+		"equipment":              character.Equipment,
+		"spells":                 character.Spells,
+		"features_and_abilities": emptyIfNil(character.FeaturesAndAbilities),
+		"background_story":       character.BackgroundStory,
+		"status_effects":         emptyIfNil(character.StatusEffects),
+		"conditions":             emptyIfNil(character.Conditions),
+		"relationships":          emptyIfNil(character.Relationships),
+		"ai_metadata":            character.AIMetadata,
+		"updated_at":             now,
+	}
 
 	collection := r.client.Database().Collection(string(Characters))
 	result, err := collection.UpdateOne(
 		ctx,
-		bson.M{"_id": character.ID},
-		bson.M{"$set": character},
+		bson.M{"_id": character.ID, "campaign_id": campaignID},
+		bson.M{"$set": update},
 	)
 	if err != nil {
 		return fmt.Errorf("failed to update character: %w", err)
 	}
 
 	if result.MatchedCount == 0 {
-		return fmt.Errorf("character not found")
+		return models.NotFound("character")
 	}
 
+	character.CampaignID = campaignID
+	character.UpdatedAt = now
 	return nil
 }
 
 // UpdateCharacterHP updates a character's hit points
 func (r *CharacterRepository) UpdateCharacterHP(ctx context.Context, characterID primitive.ObjectID, currentHP, maxHP, tempHP int) error {
 	collection := r.client.Database().Collection(string(Characters))
-	_, err := collection.UpdateOne(
+	result, err := collection.UpdateOne(
 		ctx,
 		bson.M{"_id": characterID},
 		bson.M{
@@ -185,12 +228,15 @@ func (r *CharacterRepository) UpdateCharacterHP(ctx context.Context, characterID
 				"derived_stats.hit_points.current":   currentHP,
 				"derived_stats.hit_points.maximum":   maxHP,
 				"derived_stats.hit_points.temporary": tempHP,
-				"updated_at":                         primitive.NewDateTimeFromTime(time.Now()),
+				"updated_at":                         time.Now().UTC(),
 			},
 		},
 	)
 	if err != nil {
 		return fmt.Errorf("failed to update character HP: %w", err)
+	}
+	if result.MatchedCount == 0 {
+		return models.NotFound("character")
 	}
 	return nil
 }
@@ -198,16 +244,19 @@ func (r *CharacterRepository) UpdateCharacterHP(ctx context.Context, characterID
 // AddStatusEffect adds a status effect to a character
 func (r *CharacterRepository) AddStatusEffect(ctx context.Context, characterID primitive.ObjectID, effect string) error {
 	collection := r.client.Database().Collection(string(Characters))
-	_, err := collection.UpdateOne(
+	result, err := collection.UpdateOne(
 		ctx,
 		bson.M{"_id": characterID},
 		bson.M{
 			"$addToSet": bson.M{"status_effects": effect},
-			"$set":      bson.M{"updated_at": primitive.NewDateTimeFromTime(time.Now())},
+			"$set":      bson.M{"updated_at": time.Now().UTC()},
 		},
 	)
 	if err != nil {
 		return fmt.Errorf("failed to add status effect: %w", err)
+	}
+	if result.MatchedCount == 0 {
+		return models.NotFound("character")
 	}
 	return nil
 }
@@ -215,30 +264,33 @@ func (r *CharacterRepository) AddStatusEffect(ctx context.Context, characterID p
 // RemoveStatusEffect removes a status effect from a character
 func (r *CharacterRepository) RemoveStatusEffect(ctx context.Context, characterID primitive.ObjectID, effect string) error {
 	collection := r.client.Database().Collection(string(Characters))
-	_, err := collection.UpdateOne(
+	result, err := collection.UpdateOne(
 		ctx,
 		bson.M{"_id": characterID},
 		bson.M{
 			"$pull": bson.M{"status_effects": effect},
-			"$set":  bson.M{"updated_at": primitive.NewDateTimeFromTime(time.Now())},
+			"$set":  bson.M{"updated_at": time.Now().UTC()},
 		},
 	)
 	if err != nil {
 		return fmt.Errorf("failed to remove status effect: %w", err)
 	}
+	if result.MatchedCount == 0 {
+		return models.NotFound("character")
+	}
 	return nil
 }
 
-// DeleteCharacter deletes a character
-func (r *CharacterRepository) DeleteCharacter(ctx context.Context, id primitive.ObjectID) error {
+// DeleteCharacterInCampaign deletes a character scoped to its campaign.
+func (r *CharacterRepository) DeleteCharacterInCampaign(ctx context.Context, campaignID string, id primitive.ObjectID) error {
 	collection := r.client.Database().Collection(string(Characters))
-	result, err := collection.DeleteOne(ctx, bson.M{"_id": id})
+	result, err := collection.DeleteOne(ctx, bson.M{"_id": id, "campaign_id": campaignID})
 	if err != nil {
 		return fmt.Errorf("failed to delete character: %w", err)
 	}
 
 	if result.DeletedCount == 0 {
-		return fmt.Errorf("character not found")
+		return models.NotFound("character")
 	}
 
 	return nil
@@ -264,21 +316,17 @@ func (r *CharacterRepository) CountCharactersByCampaign(ctx context.Context, cam
 	return count, nil
 }
 
-// SearchCharacters searches characters by name
+// SearchCharacters searches characters by name.
+//
+// The query is quoted before it reaches $regex: an unescaped caller string is
+// both a regex-injection and a ReDoS vector.
 func (r *CharacterRepository) SearchCharacters(ctx context.Context, campaignID string, query string) ([]*models.Character, error) {
-	collection := r.client.Database().Collection(string(Characters))
-	cursor, err := collection.Find(ctx, bson.M{
-		"campaign_id": campaignID,
-		"name":        bson.M{"$regex": query, "$options": "i"}, // Case-insensitive search
-	})
-	if err != nil {
-		return nil, fmt.Errorf("failed to search characters: %w", err)
+	if query == "" {
+		return r.GetCharactersByCampaign(ctx, campaignID)
 	}
-	defer cursor.Close(ctx)
 
-	var characters []*models.Character
-	if err = cursor.All(ctx, &characters); err != nil {
-		return nil, fmt.Errorf("failed to decode characters: %w", err)
-	}
-	return characters, nil
+	return r.findCharacters(ctx, bson.M{
+		"campaign_id": campaignID,
+		"name":        bson.M{"$regex": regexp.QuoteMeta(query), "$options": "i"}, // Case-insensitive search
+	})
 }

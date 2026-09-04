@@ -1,4 +1,13 @@
-# DeepSeek AI Integration Design
+# AI Integration Design
+
+> **Provider-agnostic since 2026-09-04.** This document was written against DeepSeek, and
+> DeepSeek-specific details below (endpoint, model name, pricing) are historical. The code
+> talks to any OpenAI-compatible `/chat/completions` endpoint and defaults to **Groq**;
+> the provider is `ai.base_url` in `configs/config.yaml`, not a Go symbol. Everything about
+> prompts, temperature and context strategy applies unchanged.
+>
+> Semantic retrieval via embeddings is out of scope — see ARCHITECTURE.md §0. Build
+> context from the last N story events plus a rolling summary instead.
 
 ## Overview
 

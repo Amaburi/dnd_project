@@ -22,11 +22,14 @@ func NewCampaignRepository(client *Client) *CampaignRepository {
 func (r *CampaignRepository) CreateCampaign(ctx context.Context, campaign *models.Campaign) error {
 	// Validate required fields
 	if campaign.Title == "" {
-		return fmt.Errorf("campaign title is required")
+		return models.Invalid("campaign title is required")
 	}
 	if campaign.CreatedBy == "" {
-		return fmt.Errorf("created_by is required")
+		return models.Invalid("created_by is required")
 	}
+
+	// The _id is assigned by MongoDB; a client-supplied one is ignored.
+	campaign.ID = primitive.NilObjectID
 
 	// Generate CampaignID if not set
 	if campaign.CampaignID == "" {
@@ -34,15 +37,22 @@ func (r *CampaignRepository) CreateCampaign(ctx context.Context, campaign *model
 	}
 
 	// Set timestamps
-	now := time.Now()
+	now := time.Now().UTC()
 	campaign.CreatedAt = now
 	campaign.UpdatedAt = now
 
 	// Insert to MongoDB
 	collection := r.client.Database().Collection(string(Campaigns))
-	_, err := collection.InsertOne(ctx, campaign)
+	result, err := collection.InsertOne(ctx, campaign)
 	if err != nil {
+		if mongo.IsDuplicateKeyError(err) {
+			return models.Invalid("campaign_id %q already exists", campaign.CampaignID)
+		}
 		return fmt.Errorf("failed to insert campaign: %w", err)
+	}
+
+	if id, ok := result.InsertedID.(primitive.ObjectID); ok {
+		campaign.ID = id
 	}
 	return nil
 }
@@ -87,6 +97,10 @@ func (r *CampaignRepository) GetCampaignsByUser(ctx context.Context, userID stri
 	if err = cursor.All(ctx, &campaigns); err != nil {
 		return nil, fmt.Errorf("failed to decode campaigns: %w", err)
 	}
+	if campaigns == nil {
+		// Encode an empty result as [] rather than null.
+		campaigns = []*models.Campaign{}
+	}
 	return campaigns, nil
 }
 
@@ -99,41 +113,52 @@ func (r *CampaignRepository) DeleteCampaign(ctx context.Context, id primitive.Ob
 	}
 
 	if result.DeletedCount == 0 {
-		return fmt.Errorf("campaign not found")
+		return models.NotFound("campaign")
 	}
 
 	return nil
 }
 
-// UpdateCampaign updates an existing campaign
+// UpdateCampaign updates the mutable fields of an existing campaign.
+//
+// The update document is built field by field on purpose. Passing the decoded
+// struct to $set would also write every field the caller omitted -- blanking
+// the uniquely indexed campaign_id and zeroing created_at.
 func (r *CampaignRepository) UpdateCampaign(ctx context.Context, campaign *models.Campaign) error {
-	// Validate required fields
-	if campaign.Title == "" {
-		return fmt.Errorf("campaign title is required")
-	}
-	if campaign.CreatedBy == "" {
-		return fmt.Errorf("created_by is required")
-	}
 	if campaign.ID.IsZero() {
-		return fmt.Errorf("campaign ID is required")
+		return models.Invalid("campaign ID is required")
+	}
+	if campaign.Title == "" {
+		return models.Invalid("campaign title is required")
 	}
 
-	// Update timestamp
-	campaign.UpdatedAt = time.Now()
+	now := time.Now().UTC()
+	update := bson.M{
+		"title":              campaign.Title,
+		"description":        campaign.Description,
+		"setting":            campaign.Setting,
+		"dm_settings":        campaign.DMSettings,
+		"ai_personality":     campaign.AIPersonality,
+		"status":             campaign.Status,
+		"current_session_id": campaign.CurrentSessionID,
+		"story_progress":     campaign.StoryProgress,
+		"updated_at":         now,
+	}
 
 	collection := r.client.Database().Collection(string(Campaigns))
 	result, err := collection.UpdateOne(
 		ctx,
 		bson.M{"_id": campaign.ID},
-		bson.M{"$set": campaign},
+		bson.M{"$set": update},
 	)
 	if err != nil {
 		return fmt.Errorf("failed to update campaign: %w", err)
 	}
 
 	if result.MatchedCount == 0 {
-		return fmt.Errorf("campaign not found")
+		return models.NotFound("campaign")
 	}
 
+	campaign.UpdatedAt = now
 	return nil
 }

@@ -287,15 +287,18 @@ type GameLog struct {
 	Timestamp  time.Time              `json:"timestamp" bson:"timestamp"`
 }
 
-// AIContext stores AI context for the campaign
+// AIContext stores durable campaign context to feed into prompts.
+//
+// Retrieval is deliberately not semantic: a single campaign's context fits in
+// a prompt window, so the last N story events plus a rolling summary beat an
+// embedding index that would need a vector store, an embedding model and a
+// reindex on every edit. Select by ContextType and recency.
 type AIContext struct {
 	ID          primitive.ObjectID `json:"id" bson:"_id,omitempty"`
 	ContextID   string             `json:"context_id" bson:"context_id"`
 	CampaignID  string             `json:"campaign_id" bson:"campaign_id"`
 	ContextType string             `json:"context_type" bson:"context_type"` // "world", "character", "plot", "session"
 	Content     string             `json:"content" bson:"content"`
-	Embedding   []float64          `json:"embedding" bson:"embedding"` // Vector embedding for semantic search
-	Relevance   float64            `json:"relevance" bson:"relevance"`
 	CreatedAt   time.Time          `json:"created_at" bson:"created_at"`
 	UpdatedAt   time.Time          `json:"updated_at" bson:"updated_at"`
 }

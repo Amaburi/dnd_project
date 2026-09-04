@@ -38,7 +38,7 @@ func main() {
 		AuthSource:     cfg.MongoDB.AuthSource,
 		MaxPoolSize:    cfg.MongoDB.MaxPoolSize,
 		MinPoolSize:    cfg.MongoDB.MinPoolSize,
-		ConnectTimeout: 10 * time.Second,
+		ConnectTimeout: cfg.MongoDB.ConnectTimeout,
 	})
 	if err != nil {
 		logger.Fatal().Err(err).Msg("Failed to connect to MongoDB")
@@ -66,13 +66,16 @@ func main() {
 	campaignRepo := mongodb.NewCampaignRepository(mongoClient)
 	characterRepo := mongodb.NewCharacterRepository(mongoClient)
 
-	// Initialize handlers
-	campaignHandler := handlers.NewCampaignHandler(campaignRepo)
-	characterHandler := handlers.NewCharacterHandler(characterRepo)
+	// Initialize handlers. Each needs the other's repository: campaigns cascade
+	// their characters on delete, characters resolve their campaign by _id.
+	campaignHandler := handlers.NewCampaignHandler(campaignRepo, characterRepo)
+	characterHandler := handlers.NewCharacterHandler(characterRepo, campaignRepo)
 
 	// Create API server
 	server := api.NewServer(api.ServerConfig{
+		Host:         cfg.App.Host,
 		Port:         cfg.App.Port,
+		Debug:        cfg.App.Debug,
 		ReadTimeout:  15 * time.Second,
 		WriteTimeout: 15 * time.Second,
 		IdleTimeout:  60 * time.Second,
@@ -80,7 +83,7 @@ func main() {
 
 	// Start server in goroutine
 	go func() {
-		logger.Info().Int("port", cfg.App.Port).Msg("Starting HTTP server")
+		logger.Info().Str("host", cfg.App.Host).Int("port", cfg.App.Port).Msg("Starting HTTP server")
 		if err := server.Start(); err != nil && err != http.ErrServerClosed {
 			logger.Fatal().Err(err).Msg("Server failed")
 		}

@@ -2,6 +2,8 @@ package ai
 
 import (
 	"fmt"
+	"regexp"
+	"sort"
 	"strings"
 )
 
@@ -115,7 +117,7 @@ Action: {{action_type}}
 Attacker: {{attacker_name}}
 Target: {{target_name}}
 Roll Result: {{roll_result}} ({{outcome}})
-{{#if damage}}Damage: {{damage}}{{/if}}
+{{damage_line}}
 
 Context: {{combat_context}}`,
 		},
@@ -211,25 +213,51 @@ Include:
 	}
 }
 
-// BuildPrompt builds a prompt from a template with variables
+// placeholderPattern matches a single {{variable}} slot.
+var placeholderPattern = regexp.MustCompile(`\{\{([A-Za-z_][A-Za-z0-9_]*)\}\}`)
+
+// substitute replaces every {{key}} in one pass.
+//
+// A single pass matters: replacing key by key meant a *value* containing
+// "{{other_key}}" got expanded by a later iteration, and Go randomises map
+// order, so whether player text could inject another variable varied run to
+// run. Scanning the template once makes substituted text inert.
+//
+// Missing keys are collected rather than left in place -- an unresolved
+// placeholder reaching the model is always a bug.
+func substitute(template string, variables map[string]string, missing map[string]struct{}) string {
+	return placeholderPattern.ReplaceAllStringFunc(template, func(match string) string {
+		key := placeholderPattern.FindStringSubmatch(match)[1]
+		value, ok := variables[key]
+		if !ok {
+			missing[key] = struct{}{}
+			return match
+		}
+		return value
+	})
+}
+
+// BuildPrompt builds a prompt from a template with variables.
+//
+// Every placeholder the template names must have a value; an incomplete
+// variable map is an error, not a prompt with braces in it.
 func (pb *PromptBuilder) BuildPrompt(templateName string, variables map[string]string) ([]Message, error) {
 	template, ok := pb.templates[templateName]
 	if !ok {
 		return nil, fmt.Errorf("template not found: %s", templateName)
 	}
 
-	// Replace variables in system prompt
-	systemPrompt := template.System
-	for key, value := range variables {
-		placeholder := fmt.Sprintf("{{%s}}", key)
-		systemPrompt = strings.ReplaceAll(systemPrompt, placeholder, value)
-	}
+	missing := map[string]struct{}{}
+	systemPrompt := substitute(template.System, variables, missing)
+	userPrompt := substitute(template.User, variables, missing)
 
-	// Replace variables in user prompt
-	userPrompt := template.User
-	for key, value := range variables {
-		placeholder := fmt.Sprintf("{{%s}}", key)
-		userPrompt = strings.ReplaceAll(userPrompt, placeholder, value)
+	if len(missing) > 0 {
+		names := make([]string, 0, len(missing))
+		for name := range missing {
+			names = append(names, name)
+		}
+		sort.Strings(names)
+		return nil, fmt.Errorf("template %q: missing variables: %s", templateName, strings.Join(names, ", "))
 	}
 
 	return []Message{

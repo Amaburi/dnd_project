@@ -641,7 +641,13 @@ func (m *CombatStateMachine) startInitiative() error {
 }
 ```
 
-### Event Sourcing
+### Event Sourcing (OUT OF SCOPE)
+
+> **Cut on 2026-09-04.** Replay, snapshots and undo impose a cost on every write path to
+> buy a feature nobody has asked for; see ARCHITECTURE.md §0. Append to `story_events`
+> ordered by `sequence_number` instead — that already gives the AI its history and the
+> player a readable log. The design below is kept in case undo becomes a real
+> requirement.
 
 ```go
 type EventStore struct {

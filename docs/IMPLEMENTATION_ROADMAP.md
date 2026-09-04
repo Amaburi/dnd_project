@@ -467,7 +467,7 @@ Improve reliability, performance, and developer experience.
 ### Deliverables
 
 #### Week 17: Performance
-- [ ] Redis caching layer
+- ~~Redis caching layer~~ — cut, see ARCHITECTURE.md §0
 - [ ] Query optimization
 - [ ] Connection pooling tuning
 - [ ] Async processing setup
@@ -498,7 +498,6 @@ Improve reliability, performance, and developer experience.
 ```
 Week 17 Tasks:
 ├── Caching
-│   ├── Redis setup
 │   ├── cache strategies
 │   └── invalidation
 ├── Optimization
@@ -553,7 +552,7 @@ Week 19 Tasks:
 ### Future Enhancements
 
 #### Multiplayer Support
-- [ ] WebSocket real-time updates
+- ~~WebSocket real-time updates~~ — cut, see ARCHITECTURE.md §0
 - [ ] Player presence tracking
 - [ ] Turn-based locking
 - [ ] Simultaneous actions

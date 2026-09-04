@@ -1,6 +1,10 @@
 package models
 
-import "go.mongodb.org/mongo-driver/bson/primitive"
+import (
+	"time"
+
+	"go.mongodb.org/mongo-driver/bson/primitive"
+)
 
 // Character represents a player character or NPC in a campaign
 type Character struct {
@@ -27,8 +31,8 @@ type Character struct {
 
 	AIMetadata AIMetadata `json:"ai_metadata" bson:"ai_metadata"`
 
-	CreatedAt primitive.DateTime `json:"created_at" bson:"created_at"`
-	UpdatedAt primitive.DateTime `json:"updated_at" bson:"updated_at"`
+	CreatedAt time.Time `json:"created_at" bson:"created_at"`
+	UpdatedAt time.Time `json:"updated_at" bson:"updated_at"`
 }
 
 // BasicInfo contains basic character information
@@ -146,15 +150,15 @@ type BackgroundStory struct {
 
 // Relationship represents a relationship between characters
 type Relationship struct {
-	CharacterID   string             `json:"character_id" bson:"character_id"`     // ID of the related character
-	CharacterName string             `json:"character_name" bson:"character_name"` // Name for quick reference
-	RelationType  string             `json:"relation_type" bson:"relation_type"`   // e.g., "ally", "enemy", "friend", "rival", "family", "mentor", "student"
-	Strength      int                `json:"strength" bson:"strength"`             // Relationship strength: -100 (hostile) to 100 (devoted)
-	Description   string             `json:"description" bson:"description"`       // Narrative description of the relationship
-	History       string             `json:"history" bson:"history"`               // How they met, shared experiences
-	Notes         string             `json:"notes" bson:"notes"`                   // Additional notes
-	CreatedAt     primitive.DateTime `json:"created_at" bson:"created_at"`
-	UpdatedAt     primitive.DateTime `json:"updated_at" bson:"updated_at"`
+	CharacterID   string    `json:"character_id" bson:"character_id"`     // ID of the related character
+	CharacterName string    `json:"character_name" bson:"character_name"` // Name for quick reference
+	RelationType  string    `json:"relation_type" bson:"relation_type"`   // e.g., "ally", "enemy", "friend", "rival", "family", "mentor", "student"
+	Strength      int       `json:"strength" bson:"strength"`             // Relationship strength: -100 (hostile) to 100 (devoted)
+	Description   string    `json:"description" bson:"description"`       // Narrative description of the relationship
+	History       string    `json:"history" bson:"history"`               // How they met, shared experiences
+	Notes         string    `json:"notes" bson:"notes"`                   // Additional notes
+	CreatedAt     time.Time `json:"created_at" bson:"created_at"`
+	UpdatedAt     time.Time `json:"updated_at" bson:"updated_at"`
 }
 
 // AIMetadata contains AI-specific character information

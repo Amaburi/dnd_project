@@ -17,18 +17,19 @@ func main() {
 		log.Fatalf("Failed to load config: %v", err)
 	}
 
-	// Check if API key is set
-	if cfg.DeepSeek.APIKey == "" {
-		log.Fatal("DEEPSEEK_API_KEY environment variable not set")
-	}
-
-	// Create AI service
+	// Create AI service. NewService validates the configuration, so a missing
+	// key or endpoint fails here rather than on the first request.
 	aiService, err := ai.NewService(ai.ClientConfig{
-		APIKey:     cfg.DeepSeek.APIKey,
-		BaseURL:    cfg.DeepSeek.BaseURL,
-		Model:      cfg.DeepSeek.Model,
-		Timeout:    cfg.DeepSeek.Timeout,
-		MaxRetries: cfg.DeepSeek.MaxRetries,
+		Provider:   cfg.AI.Provider,
+		APIKey:     cfg.AI.APIKey,
+		BaseURL:    cfg.AI.BaseURL,
+		Model:      cfg.AI.Model,
+		Timeout:    cfg.AI.Timeout,
+		MaxRetries: cfg.AI.MaxRetries,
+		Pricing: ai.Pricing{
+			PromptUSDPerMillion:     cfg.AI.Pricing.PromptUSDPerMillion,
+			CompletionUSDPerMillion: cfg.AI.Pricing.CompletionUSDPerMillion,
+		},
 	})
 	if err != nil {
 		log.Fatalf("Failed to create AI service: %v", err)

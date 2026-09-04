@@ -477,7 +477,12 @@ Accept: application/vnd.dnd-campaign.v1+json
 
 ---
 
-## 11. WebSocket for Real-Time (Future)
+## 11. WebSocket for Real-Time (OUT OF SCOPE)
+
+> **Cut on 2026-09-04.** Real-time only earns its cost with a second concurrent player;
+> see ARCHITECTURE.md §0. The sketch below is kept for whenever that changes. If a single
+> long narration ever feels slow, stream it with SSE over the existing REST endpoint
+> instead — `ai.Service.StreamNarrative` already produces that.
 
 ```javascript
 // Connect to game session

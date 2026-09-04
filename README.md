@@ -1,11 +1,12 @@
 # AI D&D Campaign Manager
 
-An AI-powered Dungeons & Dragons campaign management system built with Go, MongoDB, and DeepSeek AI.
+An AI-powered Dungeons & Dragons campaign management system built with Go, MongoDB, and any
+OpenAI-compatible AI provider (Groq by default).
 
 ## Features
 
 - 🎲 **Dice Rolling System**: Full D&D 5e dice mechanics with advantage/disadvantage
-- 🤖 **AI Dungeon Master**: Dynamic narrative generation using DeepSeek
+- 🤖 **AI Dungeon Master**: Dynamic narrative generation, provider-agnostic (Groq, DeepSeek, OpenAI, local)
 - ⚔️ **Combat System**: Initiative tracking, turns, and combat resolution
 - 👥 **Character Management**: Full character sheet support
 - 📖 **Story Tracking**: Campaign narrative and session history
@@ -17,7 +18,7 @@ An AI-powered Dungeons & Dragons campaign management system built with Go, Mongo
 
 - Go 1.21+
 - MongoDB 7.0+
-- DeepSeek API key
+- An API key for an OpenAI-compatible provider ([Groq](https://console.groq.com/keys) by default)
 
 ### Installation
 
@@ -39,21 +40,18 @@ An AI-powered Dungeons & Dragons campaign management system built with Go, Mongo
    ```
 
 4. **Set environment variables**
+
+   Copy `.env.example` to `.env` and fill it in. `make run` sources it automatically,
+   because `configs/config.yaml` refers to these as `${VAR}` placeholders.
    ```bash
-   export MONGODB_PASSWORD="your-password"
-   export DEEPSEEK_API_KEY="your-api-key"
+   cp .env.example .env
+   # MONGODB_URI, GROQ_API_KEY
    ```
 
 5. **Run the server**
    ```bash
    make run
    ```
-
-### Using Docker
-
-```bash
-docker-compose up -d
-```
 
 ## Project Structure
 
@@ -86,7 +84,7 @@ dnd-project/
 
 ### Characters
 - `POST /api/v1/campaigns/:id/characters` - Create character
-- `GET /api/v1/campaigns/:id/characters` - List characters
+- `GET /api/v1/campaigns/:id/characters` - List characters (optional `?q=` name filter)
 - `GET /api/v1/campaigns/:id/characters/:char_id` - Get character
 - `PUT /api/v1/campaigns/:id/characters/:char_id` - Update character
 - `DELETE /api/v1/campaigns/:id/characters/:char_id` - Delete character
