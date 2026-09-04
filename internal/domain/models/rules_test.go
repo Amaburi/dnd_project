@@ -2,6 +2,12 @@ package models
 
 import "testing"
 
+// levels builds a single-class BasicInfo for tests that only care about the
+// character's level.
+func levels(c Class, level int) BasicInfo {
+	return BasicInfo{Classes: []ClassLevel{{Class: c, Level: level}}}
+}
+
 // Go truncates integer division toward zero, so a naive (score-10)/2 gives -1
 // for a score of 7 where D&D wants -2.
 func TestAbilityModifierRoundsTowardNegativeInfinity(t *testing.T) {
@@ -60,7 +66,7 @@ func TestEverySkillHasAnAbility(t *testing.T) {
 // bard's Jack of All Trades adds half of it, rounded down.
 func TestSkillModifierAppliesProficiencyLevels(t *testing.T) {
 	c := &Character{
-		BasicInfo:     BasicInfo{Level: 5}, // proficiency bonus +3
+		BasicInfo:     levels(ClassRogue, 5), // proficiency bonus +3
 		AbilityScores: AbilityScores{Dexterity: 16, Wisdom: 12},
 		Skills: SkillProficiencies{
 			SkillStealth:    ProficiencyExpertise,
@@ -89,7 +95,7 @@ func TestSkillModifierAppliesProficiencyLevels(t *testing.T) {
 
 func TestPassivePerceptionIsTenPlusModifier(t *testing.T) {
 	c := &Character{
-		BasicInfo:     BasicInfo{Level: 1},
+		BasicInfo:     levels(ClassRanger, 1),
 		AbilityScores: AbilityScores{Wisdom: 14},
 		Skills:        SkillProficiencies{SkillPerception: ProficiencyProficient},
 	}
@@ -270,28 +276,6 @@ func TestSpellSlotsExpendAndRestore(t *testing.T) {
 	}
 }
 
-// A long rest returns half a character's total hit dice, rounded down, but
-// never fewer than one.
-func TestHitDiceRegainOnLongRest(t *testing.T) {
-	cases := []struct {
-		total, spent, wantSpent int
-	}{
-		{total: 10, spent: 10, wantSpent: 5}, // regains 5
-		{total: 5, spent: 5, wantSpent: 3},   // half of 5 rounds down to 2
-		{total: 1, spent: 1, wantSpent: 0},   // minimum of one
-		{total: 8, spent: 1, wantSpent: 0},   // cannot regain more than spent
-	}
-
-	for _, tc := range cases {
-		h := HitDice{Die: 8, Total: tc.total, Spent: tc.spent}
-		h.RegainOnLongRest()
-		if h.Spent != tc.wantSpent {
-			t.Errorf("HitDice{total:%d spent:%d} after long rest spent = %d, want %d",
-				tc.total, tc.spent, h.Spent, tc.wantSpent)
-		}
-	}
-}
-
 // Advantage and disadvantage never stack, and one of each cancels out.
 func TestRollModeCombine(t *testing.T) {
 	cases := []struct{ a, b, want RollMode }{
@@ -394,7 +378,7 @@ func TestMonsterDamageAffinityPrecedence(t *testing.T) {
 
 func TestSpellSaveDCAndAttackModifier(t *testing.T) {
 	wizard := &Character{
-		BasicInfo:     BasicInfo{Level: 9}, // proficiency +4
+		BasicInfo:     levels(ClassWizard, 9), // proficiency +4
 		AbilityScores: AbilityScores{Intelligence: 18},
 		Spells:        Spells{SpellcastingAbility: AbilityIntelligence},
 	}
@@ -407,7 +391,7 @@ func TestSpellSaveDCAndAttackModifier(t *testing.T) {
 	}
 
 	// A non-caster reports zero rather than a bonus built from nothing.
-	fighter := &Character{BasicInfo: BasicInfo{Level: 9}}
+	fighter := &Character{BasicInfo: levels(ClassFighter, 9)}
 	if got := fighter.SpellSaveDC(); got != 0 {
 		t.Errorf("non-caster SpellSaveDC = %d, want 0", got)
 	}

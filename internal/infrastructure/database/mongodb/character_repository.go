@@ -46,6 +46,13 @@ func (r *CharacterRepository) CreateCharacter(ctx context.Context, character *mo
 		return models.Invalid("character type is required")
 	}
 
+	// A new character must describe a legal 5e sheet. Updates deliberately do
+	// not run this: sheets written before a rules change should stay editable
+	// rather than becoming unsaveable.
+	if err := character.ValidateSheet(); err != nil {
+		return err
+	}
+
 	// The _id is assigned by MongoDB; a client-supplied one is ignored.
 	character.ID = primitive.NilObjectID
 

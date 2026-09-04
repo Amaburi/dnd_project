@@ -62,6 +62,42 @@ Armor class is no longer stored. If a character's AC came from armor, give the e
 item an `armor` block (`category`, `base_ac`) so it can be computed; otherwise put the
 difference in `combat_stats.armor_class_bonus`.
 
+## 3b. `basic_info` is now class/race/background typed, and multiclass-aware
+
+`class` and `level` became a `classes` array so Fighter 3 / Wizard 2 is representable,
+and race, subrace and background became closed sets. Values must match the constants
+(lower_snake_case: `half_elf`, `folk_hero`, `eldritch_knight`).
+
+```js
+db.characters.updateMany({ "basic_info.classes": { $exists: false } }, [
+  { $set: {
+      "basic_info.classes": [{
+        class:    { $toLower: "$basic_info.class" },
+        subclass: "",
+        level:    { $ifNull: ["$basic_info.level", 1] }
+      }],
+      "basic_info.race":       { $toLower: "$basic_info.race" },
+      "basic_info.background": { $toLower: "$basic_info.background" }
+  }},
+  { $unset: ["basic_info.class", "basic_info.level"] }
+]);
+```
+
+Then fix by hand what a script cannot infer:
+
+- **Subclass.** Every character at or above their class's subclass level needs one
+  (`3` for most, `2` for druid and wizard, `1` for cleric, sorcerer and warlock).
+  `ValidateSheet` rejects a character missing it.
+- **Subrace.** Dwarf, elf, halfling and gnome require one; the others must leave it empty.
+- **Multi-word names** need underscores: `"Half Elf"` → `half_elf`, `"Folk Hero"` →
+  `folk_hero`.
+- **Hit dice** are rebuilt from class by `Character.ExpectedHitDice()`, so the d8 guess in
+  step 3 is corrected once `basic_info.classes` is right. Call `ApplyClassDefaults()` or
+  re-save through the API.
+
+`CreateCharacter` now runs `ValidateSheet` — new characters must be legal 5e. Updates
+deliberately do not, so legacy sheets stay editable.
+
 ## 4. Skills and saving throws are no longer booleans
 
 Proficiency is four-valued (`""`, `"half"`, `"proficient"`, `"expertise"`) and the fields

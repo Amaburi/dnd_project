@@ -1,7 +1,5 @@
 package models
 
-import "fmt"
-
 // MaxSpellLevel is the highest spell level in 5e.
 const MaxSpellLevel = 9
 
@@ -127,49 +125,4 @@ func (s *Spells) HighestSlotLevel() int {
 		}
 	}
 	return highest
-}
-
-// HitDice tracks the dice a character spends to heal on a short rest.
-//
-// Without these a short rest cannot restore anything, which is half of 5e's
-// resource economy.
-type HitDice struct {
-	Die   int `json:"die" bson:"die"`     // 6, 8, 10 or 12 by class
-	Total int `json:"total" bson:"total"` // equal to character level
-	Spent int `json:"spent" bson:"spent"`
-}
-
-// Available returns how many hit dice remain to spend.
-func (h HitDice) Available() int {
-	if h.Spent > h.Total {
-		return 0
-	}
-	return h.Total - h.Spent
-}
-
-// Spend consumes one hit die.
-func (h *HitDice) Spend() error {
-	if h.Available() < 1 {
-		return Invalid("no hit dice remaining")
-	}
-	h.Spent++
-	return nil
-}
-
-// RegainOnLongRest returns hit dice as a long rest does: at least one, and up
-// to half the character's total, rounded down.
-func (h *HitDice) RegainOnLongRest() {
-	regained := h.Total / 2
-	if regained < 1 {
-		regained = 1
-	}
-	if regained > h.Spent {
-		regained = h.Spent
-	}
-	h.Spent -= regained
-}
-
-// String renders the pool as a dice expression, e.g. "3/5d8".
-func (h HitDice) String() string {
-	return fmt.Sprintf("%d/%dd%d", h.Available(), h.Total, h.Die)
 }

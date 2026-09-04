@@ -52,14 +52,68 @@ type Character struct {
 	UpdatedAt time.Time `json:"updated_at" bson:"updated_at"`
 }
 
-// BasicInfo contains basic character information
+// BasicInfo contains basic character information.
+//
+// Classes is a slice rather than a class-and-level pair because 5e has three
+// different notions of "level" that a single integer conflated: the total
+// decides proficiency bonus, a weighted caster level decides spell slots, and
+// hit dice stay in separate pools per class.
 type BasicInfo struct {
-	Race             string `json:"race" bson:"race"`
-	Class            string `json:"class" bson:"class"`
-	Background       string `json:"background" bson:"background"`
-	Level            int    `json:"level" bson:"level"`
+	Race       Race       `json:"race" bson:"race"`
+	Subrace    string     `json:"subrace,omitempty" bson:"subrace,omitempty"`
+	Background Background `json:"background" bson:"background"`
+
+	Classes []ClassLevel `json:"classes" bson:"classes"`
+
+	// AbilityChoices records the abilities a half-elf raised by +1, so the
+	// creation decision is not lost once the final scores are written down.
+	AbilityChoices []Ability `json:"ability_choices,omitempty" bson:"ability_choices,omitempty"`
+
 	ExperiencePoints int    `json:"experience_points" bson:"experience_points"`
 	Alignment        string `json:"alignment" bson:"alignment"`
+}
+
+// TotalLevel is the character level: the sum of every class level. This is
+// what proficiency bonus and most level-gated rules use.
+func (b BasicInfo) TotalLevel() int {
+	total := 0
+	for _, cl := range b.Classes {
+		total += cl.Level
+	}
+	if total < 1 {
+		return 1
+	}
+	return total
+}
+
+// LevelIn returns how many levels the character has in one class.
+func (b BasicInfo) LevelIn(c Class) int {
+	for _, cl := range b.Classes {
+		if cl.Class == c {
+			return cl.Level
+		}
+	}
+	return 0
+}
+
+// PrimaryClass is the class with the most levels, which is what a character
+// is usually called. Ties go to the first listed, which is the class taken
+// at first level.
+func (b BasicInfo) PrimaryClass() Class {
+	var best Class
+	highest := 0
+	for _, cl := range b.Classes {
+		if cl.Level > highest {
+			best, highest = cl.Class, cl.Level
+		}
+	}
+	return best
+}
+
+// IsMulticlassed reports whether the character has levels in more than one
+// class.
+func (b BasicInfo) IsMulticlassed() bool {
+	return len(b.Classes) > 1
 }
 
 // CombatStats holds the values that are genuinely stored rather than derived.
@@ -213,9 +267,18 @@ type AIMetadata struct {
 // can never disagree with itself about its own numbers.
 // ---------------------------------------------------------------------------
 
-// ProficiencyBonus returns the bonus for the character's level.
+// Level is the character's total level across all classes.
+func (c *Character) Level() int {
+	return c.BasicInfo.TotalLevel()
+}
+
+// ProficiencyBonus returns the bonus for the character's total level.
+//
+// Proficiency bonus always comes from the total, never from a single class:
+// a Fighter 3 / Wizard 2 has the +3 of a 5th-level character, not the +2 of
+// either half.
 func (c *Character) ProficiencyBonus() int {
-	return ProficiencyBonusForLevel(c.BasicInfo.Level)
+	return ProficiencyBonusForLevel(c.BasicInfo.TotalLevel())
 }
 
 // AbilityModifier returns the modifier for one ability.
@@ -267,6 +330,79 @@ func (c *Character) SpellAttackModifier() int {
 		return 0
 	}
 	return c.ProficiencyBonus() + c.AbilityModifier(c.Spells.SpellcastingAbility)
+}
+
+// Speed is the walking speed granted by race and subrace, unless the
+// character carries an explicit override.
+func (c *Character) Speed() int {
+	if c.CombatStats.Speed > 0 {
+		return c.CombatStats.Speed
+	}
+	return c.BasicInfo.Race.Speed(c.BasicInfo.Subrace)
+}
+
+// Size is the creature size from the character's race.
+func (c *Character) Size() CreatureSize {
+	if def, ok := c.BasicInfo.Race.Definition(); ok {
+		return def.Size
+	}
+	return SizeMedium
+}
+
+// Darkvision is the range in feet the character can see in darkness, or 0.
+func (c *Character) Darkvision() int {
+	return c.BasicInfo.Race.Darkvision(c.BasicInfo.Subrace)
+}
+
+// SpellcastingClass returns the class level whose spellcasting the character
+// uses for save DCs and attack rolls.
+//
+// A multiclassed caster has a save DC per class, since each uses its own
+// ability. The highest-level casting class is the sensible default; callers
+// needing another can reach into BasicInfo.Classes.
+func (c *Character) SpellcastingClass() (ClassLevel, bool) {
+	var best ClassLevel
+	highest := 0
+	for _, cl := range c.BasicInfo.Classes {
+		if ability, progression := cl.Casting(); progression != CasterNone && ability != "" {
+			if cl.Level > highest {
+				best, highest = cl, cl.Level
+			}
+		}
+	}
+	return best, highest > 0
+}
+
+// ExpectedSpellSlots computes the slots the character should have from their
+// class levels, plus any warlock pact magic slots.
+//
+// Spells.Slots holds what they currently have, including what is expended;
+// this is the entitlement to reconcile against on level up or a long rest.
+func (c *Character) ExpectedSpellSlots() (slots []SpellSlot, pactCount, pactLevel int) {
+	return SpellSlotsForClasses(c.BasicInfo.Classes)
+}
+
+// ExpectedHitDice returns the hit dice pools implied by the character's
+// classes, preserving dice already spent.
+func (c *Character) ExpectedHitDice() HitDice {
+	return HitDiceForClasses(c.BasicInfo.Classes, c.CombatStats.HitDice)
+}
+
+// GrantedSaveProficiencies returns the saving throws the character's *first*
+// class grants.
+//
+// Only the first class contributes saves: the PHB grants a multiclassed
+// character armour and weapon proficiencies from later classes but explicitly
+// not saving throw proficiencies.
+func (c *Character) GrantedSaveProficiencies() []Ability {
+	if len(c.BasicInfo.Classes) == 0 {
+		return nil
+	}
+	def, ok := c.BasicInfo.Classes[0].Class.Definition()
+	if !ok {
+		return nil
+	}
+	return def.SavingThrows
 }
 
 // CarryingCapacity is Strength score times 15, in pounds.

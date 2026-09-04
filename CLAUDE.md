@@ -17,6 +17,7 @@ Phases 2–5 are not started.
 | Campaign + Character REST CRUD | Implemented, campaign-scoped, cascading delete |
 | AI client, prompt builder, AI service | Implemented, **not wired into the API** |
 | 5e rules vocabulary + derived stats | Implemented in `models`, unit-tested |
+| Classes, subclasses, races, backgrounds, multiclassing | Implemented as tables in `models`, unit-tested |
 | Monster statblocks | **Model only** — no repository, no routes |
 | Session / StoryEvent / CombatEncounter | **Models only** — no repository, no routes |
 | Dice roller, rules engine, combat tracker | **Spec only** (`docs/GAME_ENGINE.md`) — no code |
@@ -52,7 +53,7 @@ a measured reason, not because a doc still mentions them:
 make run-dev    # run from source (sources .env first)
 make run        # build ./dnd-campaign-manager, then run it
 make build
-go test ./...   # 63 tests across models, handlers, ai, config, mongodb
+go test ./...   # 91 tests across models, handlers, ai, config, mongodb
 make lint       # golangci-lint (not vendored — install separately)
 ```
 
@@ -151,6 +152,39 @@ shared game vocabulary. **Never reintroduce a bare `string` for one of these.**
 | `DamageType` | thirteen constants; `DamageAffinity` applies resist/immune/vulnerable |
 | `RollMode` | `Combine` never stacks — advantage plus disadvantage is a normal roll |
 | `CharacterType` | `player` / `npc` only. Hostiles are `Monster`, not characters |
+| `Class` / `Race` / `Background` | closed sets backed by `ClassTable`, `RaceTable`, `BackgroundTable` |
+
+### Character sheets are table-driven
+
+`class.go`, `race.go` and `background.go` are the **single source of truth** for what
+each determines. Never hand-enter a value one of these tables can derive.
+
+`BasicInfo.Classes` is a `[]ClassLevel`, because 5e has three different notions of level
+that one integer conflated:
+
+| Notion | Method | Used for |
+|---|---|---|
+| Total level | `BasicInfo.TotalLevel()` | proficiency bonus, level gates |
+| Caster level | `SpellSlotsForClasses` | spell slots |
+| Per-class levels | `HitDiceForClasses` | hit dice pools (3d10 + 2d6) |
+
+Multiclass rules that are easy to get wrong, all tested:
+
+- **Half and third casters round *up* single-classed but *down* multiclassed.** A paladin
+  gets slots at level 2 from their own table, but contributes `floor(level/2)` to a
+  combined caster level. That asymmetry is real 5e, not a bug.
+- **Pact magic never merges.** Warlock slots are returned separately by
+  `SpellSlotsForClasses` and come back on a *short* rest.
+- **Only the first class grants saving throw proficiencies** (`GrantedSaveProficiencies`).
+- **Subclass casting starts at the subclass level** — an Eldritch Knight 2 casts nothing.
+- **Multiclass prerequisites are OR-of-ANDs**: fighter is "STR 13 or DEX 13", monk is
+  "DEX 13 and WIS 13". Use `MeetsMulticlassPrerequisites`.
+
+`ValidateSheet()` checks a sheet is legal 5e — subclass timing, subrace, prerequisites,
+skills drawn from a granted or class source, total level ≤ 20. **`CreateCharacter` runs it;
+`UpdateCharacter` deliberately does not**, so sheets predating a rules change stay
+editable. `ApplyClassDefaults()` fills in what the tables determine; `ReconcileSpellSlots()`
+adds slots on level up without refunding spent ones.
 
 **Derived stats are methods, never fields.** `ProficiencyBonus()`, `SkillModifier()`,
 `SavingThrowModifier()`, `ArmorClass()`, `InitiativeModifier()`, `PassivePerception()`,
