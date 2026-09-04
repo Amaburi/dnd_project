@@ -20,16 +20,40 @@ type Client interface {
 
 // ChatRequest represents a chat completion request
 type ChatRequest struct {
-	Messages         []Message `json:"messages"`
-	Model            string    `json:"model,omitempty"`
-	Temperature      float64   `json:"temperature,omitempty"`
-	MaxTokens        int       `json:"max_tokens,omitempty"`
-	TopP             float64   `json:"top_p,omitempty"`
-	FrequencyPenalty float64   `json:"frequency_penalty,omitempty"`
-	PresencePenalty  float64   `json:"presence_penalty,omitempty"`
-	Stream           bool      `json:"stream,omitempty"`
-	Stop             []string  `json:"stop,omitempty"`
+	Messages  []Message `json:"messages"`
+	Model     string    `json:"model,omitempty"`
+	MaxTokens int       `json:"max_tokens,omitempty"`
+	Stream    bool      `json:"stream,omitempty"`
+	Stop      []string  `json:"stop,omitempty"`
+
+	// These four are pointers because 0 is a meaningful value for every one
+	// of them. As plain floats with omitempty, `temperature: 0` was dropped
+	// from the request body entirely and the provider silently applied its
+	// own default -- so asking for a deterministic answer was impossible.
+	// A nil pointer means "leave it to the provider".
+	Temperature      *float64 `json:"temperature,omitempty"`
+	TopP             *float64 `json:"top_p,omitempty"`
+	FrequencyPenalty *float64 `json:"frequency_penalty,omitempty"`
+	PresencePenalty  *float64 `json:"presence_penalty,omitempty"`
+
+	// ResponseFormat asks the provider for structured output. Set it to
+	// JSONObjectFormat when the reply is parsed rather than shown.
+	ResponseFormat *ResponseFormat `json:"response_format,omitempty"`
 }
+
+// ResponseFormat constrains the shape of a reply.
+type ResponseFormat struct {
+	Type string `json:"type"`
+}
+
+// JSONObjectFormat asks for a reply that parses as a JSON object, which is
+// what intent extraction needs.
+func JSONObjectFormat() *ResponseFormat { return &ResponseFormat{Type: "json_object"} }
+
+// Float returns a pointer to v, for the sampling parameters above.
+//
+//	req.Temperature = ai.Float(0)  // deterministic, and actually sent
+func Float(v float64) *float64 { return &v }
 
 // Message represents a chat message
 type Message struct {

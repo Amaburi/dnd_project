@@ -20,7 +20,9 @@ Phases 2–5 are not started.
 | Classes, subclasses, races, backgrounds, multiclassing | Implemented as tables in `models`, unit-tested |
 | Monster statblocks | Implemented — model, repository, REST CRUD, SRD seed catalogue |
 | Session / StoryEvent / CombatEncounter | **Models only** — no repository, no routes |
-| Dice roller, rules engine, combat tracker | **Spec only** (`docs/GAME_ENGINE.md`) — no code |
+| Dice roller | Implemented (`internal/domain/dice`), seedable |
+| Rules engine (checks, saves, attacks) | Implemented (`internal/domain/rules`) |
+| Combat tracker (turn order, rounds) | **Spec only** (`docs/GAME_ENGINE.md`) — no code |
 | Auth, rate limiting, Docker | **Config/docs only** — no code |
 
 Consequences that bite:
@@ -53,7 +55,9 @@ a measured reason, not because a doc still mentions them:
 make run-dev    # run from source (sources .env first)
 make run        # build ./dnd-campaign-manager, then run it
 make build
-go test ./...   # 153 tests across models, handlers, ai, config, mongodb
+go test ./...   # 206 tests, all offline — no provider is ever called
+go run ./examples          # one full turn against the stub, free
+go run ./examples -live    # the same prompts, sent for real
 make lint       # golangci-lint (not vendored — install separately)
 ```
 
@@ -102,6 +106,8 @@ URI resolution lives in `mongodb.buildConnectionURI`, which passes any `mongodb:
 cmd/server/main.go            composition root — all wiring lives here
 internal/api/server.go        Gin engine, route table, graceful shutdown
 internal/api/handlers/        HTTP handlers
+internal/domain/dice/         the only source of randomness — seedable for tests
+internal/domain/rules/        authoritative resolution; returns facts, not prose
 internal/domain/models/       entities (Character, Campaign, Session, Monster) plus the
                               typed 5e vocabulary (abilities, skills, conditions, items,
                               spells, dice) and the rules encoded as methods
@@ -241,6 +247,44 @@ of `ValidateSheet()` and runs on create only; it checks damage types, conditions
 multiattack names actions the monster actually has, and that printed hit points match what
 `HitDice` averages to (`ParseHitDiceFormula`).
 
+### The two-call turn
+
+One player sentence becomes three steps, and the split is the whole design:
+
+```
+"I stab the goblin"
+  → ExtractIntent   temperature 0, JSON mode, closed option lists → models.Intent
+  → rules.Engine    decides everything; returns Facts()
+  → NarrateAction   describes those facts; decides nothing
+```
+
+**`ExtractIntent` is a parser, not a DM.** It runs at temperature 0 in JSON mode and is
+handed `models.ActionOptionsFor(character, targets)` — the exact weapons, spells, items and
+creatures available — so it chooses from closed lists rather than inventing. The returned
+`Intent` is a *proposal*: `Intent.Validate(options)` rejects a weapon the character is not
+carrying, and `ExtractIntent` converts a failure into a clarifying question rather than
+letting a hallucination reach the engine. `ParseIntent` strips markdown fences and
+surrounding prose, and normalises casing (`"Sleight of Hand"` → `sleight_of_hand`).
+
+**`narrationContract` in `prompts.go` is the load-bearing paragraph of the AI layer.**
+Every template that describes an outcome prepends it: never change a number, never decide
+an outcome, never roll, never apply a condition. `NarrateAction` and `NarrateCheck` take
+the engine's `Facts()` map verbatim — facts are copied over style values last, so a style
+field can never overwrite one — and refuse outright when handed no facts.
+
+**`dm_base` no longer claims rules authority.** It used to say "Enforce: apply D&D 5e
+rules" and emit "Game State Changes", which contradicted `docs/ARCHITECTURE.md` §3.1. Tests
+now fail if either phrase returns.
+
+**Every template has a Service method**, enforced by a test: an uncallable prompt drifts
+out of date unnoticed. Optional fields fall back to placeholders because an empty value in
+a prompt reads as an invitation to invent something.
+
+**Test the AI offline.** `ai.NewStubService(replies...)` returns a Service backed by
+`StubClient`, which records every request. `stub.LastPrompt()` is what assertions about
+wording use. Calling a real model to check prompt assembly is slow, costs money and tells
+you nothing about your own code — only prose quality needs `-live`.
+
 **Progression tables** live in `class_progression.go`: `CantripsKnown()`, `SpellsKnown()`
 (for classes that know a fixed list), `PreparedSpellLimit()` (ability mod + level, half
 level for paladins, minimum 1), and `ClassFeatures` / `FeaturesAtLevel` /
@@ -320,6 +364,29 @@ total rounded down, minimum one.
 `Relationship.RelationType`, alignment, monster `Type`. Prefer adding constants over
 inventing a literal.
 
+## Dice and the rules engine
+
+**All randomness lives in `internal/domain/dice`.** `models` stays a pure function of its
+inputs — that split is what lets the rules be tested exactly rather than statistically.
+`dice.NewSeeded(n)` replays a sequence exactly; `dice.New()` seeds from the OS. Never call
+`math/rand` anywhere else.
+
+`Roller.D20(modifier, mode)` keeps **both** dice under advantage/disadvantage.
+`RollDamage(expr, critical)` doubles the dice and adds the modifier once — the most
+commonly misplayed part of a critical. `DeathSave` encodes nat 20 = regain 1 HP and
+nat 1 = two failures.
+
+**`internal/domain/rules` is authoritative.** `Engine.SkillCheck`, `AbilityCheck`,
+`SavingThrow`, `WeaponAttack` and `MonsterAttack` decide what happened; the attack methods
+apply damage to the target, so the result reports what was actually lost after resistance,
+not what the dice showed. Character state (exhaustion, noisy armour, Small + Heavy) folds
+into the roll mode automatically — callers pass only the *situational* mode.
+
+**`CheckResult.Facts()` / `AttackResult.Facts()` are the contract with the AI.** They are
+the complete set of values a narration prompt may reference, every one non-empty even on a
+miss. `Summary()` is the sentence the narration must not contradict. **The AI describes
+these facts; it never decides them** — see `docs/ARCHITECTURE.md` §3.1.
+
 ## Repository conventions
 
 - Repositories own validation and return errors wrapping the sentinels in
@@ -370,6 +437,11 @@ endpoint rather than trusting a name written down anywhere, including here.
   prompt, which is where the DM's rules live.
 - Temperature is not per-call; it comes from the `TemperatureSettings` registry keyed by
   task type via `GetTemperature`. Add a key when adding a task.
+- **Sampling parameters are `*float64`.** `Temperature`, `TopP`, `FrequencyPenalty` and
+  `PresencePenalty` are pointers because 0 is meaningful for all four; as plain floats with
+  `omitempty`, `temperature: 0` was dropped from the request and the provider silently
+  applied its own default. Use `ai.Float(0)`; nil means "provider default".
+  `ai.JSONObjectFormat()` requests structured output for intent extraction.
 - Retry lives in `ChatCompletion` and in opening a stream, driven by `Error.Retriable`
   (429/500/502/503/504 and network errors). Backoff is exponential, 1s→2s→4s capped at 30s
   — but a provider's own `Retry-After` header wins when present, capped the same way.

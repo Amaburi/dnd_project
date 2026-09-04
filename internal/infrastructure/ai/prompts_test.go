@@ -8,16 +8,19 @@ import (
 func TestBuildPromptSubstitutesEveryPlaceholder(t *testing.T) {
 	pb := NewPromptBuilder()
 
-	messages, err := pb.BuildPrompt("dice_interpretation", map[string]string{
-		"roll_type":      "ability_check",
-		"character_name": "Thistle",
-		"skill":          "Stealth",
-		"roll":           "18",
-		"modifier":       "3",
-		"total":          "21",
-		"dc":             "15",
-		"outcome":        "success",
-		"context":        "sneaking past the guard",
+	messages, err := pb.BuildPrompt("check_narration", map[string]string{
+		"actor":           "Thistle",
+		"check_kind":      "skill_check",
+		"ability":         "dexterity",
+		"skill":           "stealth",
+		"dc":              "15",
+		"outcome":         "success",
+		"margin":          "6",
+		"was_close":       "no",
+		"natural":         "18",
+		"fact_summary":    "Thistle succeeds on a DC 15 stealth skill check",
+		"narrative_voice": "third person",
+		"context":         "sneaking past the guard",
 	})
 	if err != nil {
 		t.Fatalf("BuildPrompt: %v", err)

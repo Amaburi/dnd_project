@@ -1,6 +1,7 @@
 package ai
 
 import (
+	"encoding/json"
 	"errors"
 	"net/http"
 	"strings"
@@ -210,5 +211,54 @@ func TestHandleErrorResponseCarriesRetryAfter(t *testing.T) {
 	}
 	if got, want := aiErr.RetryAfter, 12*time.Second; got != want {
 		t.Errorf("RetryAfter = %v, want %v", got, want)
+	}
+}
+
+// temperature: 0 used to vanish from the request body because the field was a
+// plain float64 with omitempty, so asking for a deterministic answer silently
+// got the provider's default instead. Intent extraction depends on this.
+func TestSamplingParametersSurviveSerialisation(t *testing.T) {
+	body, err := json.Marshal(ChatRequest{
+		Model:       "test-model",
+		Messages:    []Message{{Role: "user", Content: "hi"}},
+		Temperature: Float(0),
+		TopP:        Float(0),
+	})
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+
+	var decoded map[string]any
+	if err := json.Unmarshal(body, &decoded); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+
+	temp, ok := decoded["temperature"]
+	if !ok {
+		t.Fatalf("temperature was dropped from the request: %s", body)
+	}
+	if temp != float64(0) {
+		t.Errorf("temperature = %v, want 0", temp)
+	}
+	if _, ok := decoded["top_p"]; !ok {
+		t.Errorf("top_p was dropped from the request: %s", body)
+	}
+
+	// An unset parameter is still omitted, so the provider keeps its default.
+	body, _ = json.Marshal(ChatRequest{Model: "test-model"})
+	decoded = map[string]any{}
+	json.Unmarshal(body, &decoded) //nolint:errcheck
+	if _, ok := decoded["temperature"]; ok {
+		t.Errorf("an unset temperature should be omitted, got %s", body)
+	}
+}
+
+func TestJSONObjectFormatIsRequestable(t *testing.T) {
+	body, _ := json.Marshal(ChatRequest{
+		Model:          "test-model",
+		ResponseFormat: JSONObjectFormat(),
+	})
+	if !strings.Contains(string(body), `"response_format":{"type":"json_object"}`) {
+		t.Errorf("response_format missing from %s", body)
 	}
 }

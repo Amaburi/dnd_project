@@ -1,25 +1,114 @@
+// Command ai_usage demonstrates one full turn: parse the player's sentence,
+// let the rules engine decide what happened, then have the model narrate that
+// verdict.
+//
+// It runs offline against a stub client by default, so it costs nothing. Pass
+// -live to send the same prompts to the configured provider.
 package main
 
 import (
 	"context"
+	"flag"
 	"fmt"
 	"log"
-	"os"
+	"strings"
 
+	"github.com/dnd-campaign/manager/internal/domain/dice"
+	"github.com/dnd-campaign/manager/internal/domain/models"
+	"github.com/dnd-campaign/manager/internal/domain/rules"
 	"github.com/dnd-campaign/manager/internal/infrastructure/ai"
 	"github.com/dnd-campaign/manager/internal/infrastructure/config"
 )
 
 func main() {
-	// Load configuration
-	cfg, err := config.Load()
+	live := flag.Bool("live", false, "call the configured provider instead of the offline stub")
+	input := flag.String("input", "I slash at the goblin with my rapier", "what the player said")
+	flag.Parse()
+
+	hero := buildCharacter()
+	goblin := findGoblin()
+	target := goblin.ToCombatant("g1")
+
+	// A fixed seed so the demo tells the same story every run.
+	engine := rules.NewEngine(dice.NewSeeded(1337))
+
+	service, stub := newService(*live)
+	ctx := context.Background()
+
+	fmt.Printf("%s (AC %d)  vs  %s (AC %d, %d hp)\n\n",
+		hero.Name, hero.ArmorClass(), target.Name, target.ArmorClass, target.HitPoints.Maximum)
+	fmt.Printf("Player: %q\n\n", *input)
+
+	// --- 1. Parse -----------------------------------------------------------
+	options := models.ActionOptionsFor(hero, []string{target.Name})
+	intent, err := service.ExtractIntent(ctx, &ai.IntentRequest{
+		PlayerInput: *input,
+		Options:     options,
+		Situation:   "in combat, round 1",
+	})
 	if err != nil {
-		log.Fatalf("Failed to load config: %v", err)
+		log.Fatalf("intent extraction failed: %v", err)
 	}
 
-	// Create AI service. NewService validates the configuration, so a missing
-	// key or endpoint fails here rather than on the first request.
-	aiService, err := ai.NewService(ai.ClientConfig{
+	fmt.Println("1. PARSED INTENT")
+	fmt.Printf("   action=%s target=%q weapon=%q confidence=%s\n",
+		intent.Intent.Action, intent.Intent.Target, intent.Intent.Weapon, intent.Intent.Confidence)
+	if intent.Repaired {
+		fmt.Printf("   repaired: %s\n", intent.RepairNote)
+	}
+	if intent.Intent.Action == models.IntentUnclear {
+		fmt.Printf("\n   Ask the player: %s\n", intent.Intent.Clarification)
+		return
+	}
+
+	// --- 2. Resolve ---------------------------------------------------------
+	weapon := findWeapon(hero, intent.Intent.Weapon)
+	result, err := engine.WeaponAttack(hero, weapon, &target, models.RollNormal)
+	if err != nil {
+		log.Fatalf("resolution failed: %v", err)
+	}
+
+	fmt.Println("\n2. ENGINE VERDICT (authoritative)")
+	fmt.Printf("   %s\n", result.Summary())
+
+	// --- 3. Narrate ---------------------------------------------------------
+	narration, err := service.NarrateAction(ctx, &ai.NarrationRequest{
+		Facts:   result.Facts(),
+		Context: "a damp cellar lit by one guttering torch",
+		Style:   ai.NarrationStyle{NarrativeVoice: "third person, present tense", CombatTone: "grim and quick"},
+	})
+	if err != nil {
+		log.Fatalf("narration failed: %v", err)
+	}
+
+	fmt.Println("\n3. NARRATION")
+	fmt.Printf("   %s\n", strings.TrimSpace(narration.Text))
+	fmt.Printf("\n   (%d tokens, $%.5f)\n", narration.TokensUsed, narration.Cost)
+
+	if stub != nil {
+		fmt.Printf("\n   Offline run: %d prompts assembled, none sent. Use -live to send them.\n",
+			stub.CallCount())
+	}
+}
+
+// newService returns either a live service or an offline stub.
+func newService(live bool) (*ai.Service, *ai.StubClient) {
+	if !live {
+		// The stub answers the intent call with JSON and the narration call
+		// with prose, in that order.
+		return ai.NewStubService(
+			`{"action":"attack","target":"Goblin","weapon":"Rapier","confidence":"high",
+			  "rationale":"the player names a weapon and a creature in play"}`,
+			"The rapier slides past the goblin's guard and punches through leather. "+
+				"It folds around the blade with a wet grunt and does not get up.",
+		)
+	}
+
+	cfg, err := config.Load()
+	if err != nil {
+		log.Fatalf("failed to load config: %v", err)
+	}
+	service, err := ai.NewService(ai.ClientConfig{
 		Provider:   cfg.AI.Provider,
 		APIKey:     cfg.AI.APIKey,
 		BaseURL:    cfg.AI.BaseURL,
@@ -32,111 +121,71 @@ func main() {
 		},
 	})
 	if err != nil {
-		log.Fatalf("Failed to create AI service: %v", err)
+		log.Fatalf("failed to create AI service: %v", err)
 	}
-	defer aiService.Close()
-
-	ctx := context.Background()
-
-	// Example 1: Generate Narrative
-	fmt.Println("=== Example 1: Generate Narrative ===")
-	narrativeResp, err := aiService.GenerateNarrative(ctx, &ai.NarrativeRequest{
-		PlayerInput:    "I want to search the ancient temple for hidden passages",
-		Location:       "Ancient Temple of the Moon",
-		PartyStatus:    "Full health, cautious after recent trap",
-		RecentEvents:   "Defeated stone guardians, found mysterious inscription",
-		DMStyle:        "Narrative-focused",
-		NarrativeVoice: "Third-person omniscient",
-		HumorLevel:     "Light",
-		DetailLevel:    "Descriptive",
-	})
-	if err != nil {
-		log.Fatalf("Failed to generate narrative: %v", err)
-	}
-	fmt.Printf("\nNarrative:\n%s\n\n", narrativeResp.Narrative)
-	fmt.Printf("Tokens: %d, Cost: $%.4f, Time: %v\n\n",
-		narrativeResp.TokensUsed, narrativeResp.Cost, narrativeResp.ProcessingTime)
-
-	// Example 2: Generate NPC Dialogue
-	fmt.Println("=== Example 2: Generate NPC Dialogue ===")
-	dialogueResp, err := aiService.GenerateNPCDialogue(ctx, &ai.NPCDialogueRequest{
-		NPCName:           "Grimnar Ironforge",
-		NPCRace:           "Dwarf",
-		NPCClass:          "Blacksmith",
-		PersonalityTraits: "Gruff exterior but kind-hearted, takes pride in his work",
-		Background:        "Former adventurer who settled down to run the town smithy",
-		Motivations:       "Craft legendary weapons, protect the town",
-		SpeechPattern:     "Gruff, uses dwarven accent, speaks plainly",
-		EmotionalState:    "Busy but friendly",
-		Knowledge:         "Expert in weapons, armor, and metalworking",
-		Relationship:      "Friendly acquaintance, respects adventurers",
-		SpeakerName:       "Adventurer",
-		PlayerMessage:     "Can you repair my sword? It was damaged fighting the stone guardians.",
-		Context:           "In the smithy, morning, sound of hammer on anvil",
-	})
-	if err != nil {
-		log.Fatalf("Failed to generate dialogue: %v", err)
-	}
-	fmt.Printf("\nGrimnar says:\n%s\n\n", dialogueResp.Dialogue)
-	fmt.Printf("Tokens: %d, Cost: $%.4f, Time: %v\n\n",
-		dialogueResp.TokensUsed, dialogueResp.Cost, dialogueResp.ProcessingTime)
-
-	// Example 3: Interpret Dice Roll
-	fmt.Println("=== Example 3: Interpret Dice Roll ===")
-	diceResp, err := aiService.InterpretDiceRoll(ctx, &ai.DiceInterpretationRequest{
-		RollType:      "ability_check",
-		CharacterName: "Elara the Rogue",
-		Skill:         "Stealth",
-		Roll:          18,
-		Modifier:      5,
-		Total:         23,
-		DC:            15,
-		Outcome:       "success",
-		Context:       "Sneaking past guards in the castle courtyard at night",
-	})
-	if err != nil {
-		log.Fatalf("Failed to interpret dice roll: %v", err)
-	}
-	fmt.Printf("\nDice Interpretation:\n%s\n\n", diceResp.Interpretation)
-	fmt.Printf("Tokens: %d, Cost: $%.4f, Time: %v\n\n",
-		diceResp.TokensUsed, diceResp.Cost, diceResp.ProcessingTime)
-
-	// Example 4: Streaming Narrative
-	fmt.Println("=== Example 4: Streaming Narrative ===")
-	fmt.Print("Streaming response: ")
-
-	textChan, errChan := aiService.StreamNarrative(ctx, &ai.NarrativeRequest{
-		PlayerInput:    "I charge at the dragon with my sword raised!",
-		Location:       "Dragon's Lair - volcanic cavern",
-		PartyStatus:    "Ready for combat, buffed with protection spells",
-		RecentEvents:   "Dragon just woke up and roared",
-		DMStyle:        "Dramatic and intense",
-		NarrativeVoice: "Third-person",
-		HumorLevel:     "None",
-		DetailLevel:    "Descriptive",
-	})
-
-	for {
-		select {
-		case text, ok := <-textChan:
-			if !ok {
-				fmt.Println("\n\nStreaming complete!")
-				return
-			}
-			fmt.Print(text)
-		case err := <-errChan:
-			if err != nil {
-				log.Fatalf("\nStreaming error: %v", err)
-			}
-		}
-	}
+	return service, nil
 }
 
-// Helper function to check if running in example mode
-func init() {
-	if len(os.Args) > 1 && os.Args[1] == "example" {
-		fmt.Println("Running AI Usage Examples")
-		fmt.Println("Make sure DEEPSEEK_API_KEY is set in your environment")
-		fmt.Println()
+func buildCharacter() *models.Character {
+	rapier := models.InventoryItem{
+		ItemID: "w1", Key: "rapier", Name: "Rapier", Kind: models.ItemWeapon, Weight: 2,
+		Equipped: true,
+		Weapon: &models.WeaponProperties{
+			Category: models.WeaponMartial, DamageDice: "1d8",
+			DamageType: models.DamagePiercing,
+			Properties: []models.WeaponProperty{models.PropertyFinesse},
+		},
 	}
+
+	c := &models.Character{
+		Name: "Thistle", Type: models.CharacterPlayer,
+		BasicInfo: models.BasicInfo{
+			Race: models.RaceHalfling, Subrace: "lightfoot",
+			Background: models.BackgroundCriminal,
+			Classes:    []models.ClassLevel{{Class: models.ClassRogue, Subclass: "thief", Level: 5}},
+		},
+		AbilityScores: models.AbilityScores{
+			Strength: 10, Dexterity: 18, Constitution: 14,
+			Intelligence: 12, Wisdom: 13, Charisma: 11,
+		},
+		Skills: models.SkillProficiencies{
+			models.SkillStealth:    models.ProficiencyExpertise,
+			models.SkillAcrobatics: models.ProficiencyProficient,
+		},
+		Proficiencies: models.Proficiencies{
+			Weapons: []string{models.ProfSimpleWeapons, "rapier", "shortsword"},
+		},
+		Inventory: []models.InventoryItem{rapier},
+		Equipment: models.Equipment{Weapons: []models.InventoryItem{rapier}},
+		CombatStats: models.CombatStats{
+			HitPoints: models.HitPoints{Current: 33, Maximum: 33},
+		},
+	}
+	c.ApplyClassDefaults()
+	return c
+}
+
+func findGoblin() models.Monster {
+	for _, m := range models.SRDMonsters() {
+		if m.MonsterID == "srd_goblin" {
+			return m
+		}
+	}
+	log.Fatal("goblin missing from the SRD catalogue")
+	return models.Monster{}
+}
+
+// findWeapon resolves the name the parser returned to an item the character is
+// actually carrying, falling back to the first equipped weapon.
+func findWeapon(c *models.Character, name string) models.InventoryItem {
+	for _, w := range c.Equipment.Weapons {
+		if strings.EqualFold(w.Name, name) {
+			return w
+		}
+	}
+	if len(c.Equipment.Weapons) > 0 {
+		return c.Equipment.Weapons[0]
+	}
+	log.Fatal("character is carrying no weapon")
+	return models.InventoryItem{}
 }

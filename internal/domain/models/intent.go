@@ -1,0 +1,333 @@
+package models
+
+import (
+	"fmt"
+	"sort"
+	"strings"
+)
+
+// IntentAction is what a player is trying to do, once their sentence has been
+// parsed into something the rules engine can act on.
+//
+// This is a *proposal*, not a decision: the model that produces it only reads
+// the sentence, and the engine decides whether the action is legal and what it
+// costs. Keeping the two apart is what stops a persuasive player talking the
+// narrator into free hit points.
+type IntentAction string
+
+const (
+	IntentAttack      IntentAction = "attack"
+	IntentSkillCheck  IntentAction = "skill_check"
+	IntentSavingThrow IntentAction = "saving_throw"
+	IntentCastSpell   IntentAction = "cast_spell"
+	IntentUseItem     IntentAction = "use_item"
+	IntentMove        IntentAction = "move"
+	IntentTalk        IntentAction = "talk"
+
+	// IntentNarrative covers anything with no mechanical consequence -- looking
+	// around, describing a gesture. It needs narration, not resolution.
+	IntentNarrative IntentAction = "narrative"
+
+	// IntentUnclear means the sentence could not be read confidently. The
+	// right response is a question, not a guess.
+	IntentUnclear IntentAction = "unclear"
+)
+
+// IntentActions lists every action an intent may name.
+var IntentActions = []IntentAction{
+	IntentAttack, IntentSkillCheck, IntentSavingThrow, IntentCastSpell,
+	IntentUseItem, IntentMove, IntentTalk, IntentNarrative, IntentUnclear,
+}
+
+// Valid reports whether a is a recognised action.
+func (a IntentAction) Valid() bool {
+	for _, known := range IntentActions {
+		if a == known {
+			return true
+		}
+	}
+	return false
+}
+
+// NeedsResolution reports whether the action requires the rules engine rather
+// than only narration.
+func (a IntentAction) NeedsResolution() bool {
+	switch a {
+	case IntentAttack, IntentSkillCheck, IntentSavingThrow, IntentCastSpell:
+		return true
+	}
+	return false
+}
+
+// Confidence is how sure the parser is that it read the sentence correctly.
+type Confidence string
+
+const (
+	ConfidenceHigh   Confidence = "high"
+	ConfidenceMedium Confidence = "medium"
+	ConfidenceLow    Confidence = "low"
+)
+
+// Valid reports whether c is a recognised confidence level.
+func (c Confidence) Valid() bool {
+	return c == ConfidenceHigh || c == ConfidenceMedium || c == ConfidenceLow
+}
+
+// Intent is a parsed player action.
+type Intent struct {
+	Action IntentAction `json:"action"`
+	Actor  string       `json:"actor,omitempty"`
+	Target string       `json:"target,omitempty"`
+
+	Skill   Skill   `json:"skill,omitempty"`
+	Ability Ability `json:"ability,omitempty"`
+	Weapon  string  `json:"weapon,omitempty"`
+	Spell   string  `json:"spell,omitempty"`
+	Item    string  `json:"item,omitempty"`
+
+	// SuggestedDC is the difficulty the parser proposes. The DM is free to
+	// overrule it; nothing resolves against it until someone accepts it.
+	SuggestedDC int `json:"suggested_dc,omitempty"`
+
+	Confidence Confidence `json:"confidence"`
+
+	// Clarification is the question to ask when the sentence cannot be read.
+	Clarification string `json:"clarification,omitempty"`
+
+	// Rationale is the parser's one-line explanation, kept for debugging a
+	// misread rather than for showing to players.
+	Rationale string `json:"rationale,omitempty"`
+
+	// RawInput is the sentence this was parsed from.
+	RawInput string `json:"raw_input,omitempty"`
+}
+
+// Standard 5e difficulty classes, offered to the parser so its suggestions
+// land on the table's rungs instead of arbitrary numbers.
+var DifficultyClasses = map[string]int{
+	"very_easy":         5,
+	"easy":              10,
+	"medium":            15,
+	"hard":              20,
+	"very_hard":         25,
+	"nearly_impossible": 30,
+}
+
+// DifficultyLabel names the rung a DC sits on.
+func DifficultyLabel(dc int) string {
+	switch {
+	case dc <= 5:
+		return "very_easy"
+	case dc <= 10:
+		return "easy"
+	case dc <= 15:
+		return "medium"
+	case dc <= 20:
+		return "hard"
+	case dc <= 25:
+		return "very_hard"
+	default:
+		return "nearly_impossible"
+	}
+}
+
+// ActionOptions is what a character can actually do right now.
+//
+// It is handed to the parser so the model chooses from a closed list instead
+// of inventing a skill the character lacks or a weapon they are not holding.
+// Constraining the choices is most of what makes the parse reliable.
+type ActionOptions struct {
+	Actor   string   `json:"actor"`
+	Skills  []Skill  `json:"skills"`
+	Weapons []string `json:"weapons"`
+	Spells  []string `json:"spells"`
+	Items   []string `json:"items"`
+	Targets []string `json:"targets"`
+}
+
+// ActionOptionsFor builds the option list from a character sheet and the
+// creatures currently in play.
+func ActionOptionsFor(c *Character, targets []string) ActionOptions {
+	opts := ActionOptions{Actor: c.Name, Targets: append([]string(nil), targets...)}
+
+	// Every skill is available; proficiency only changes the modifier.
+	opts.Skills = append(opts.Skills, Skills...)
+
+	for _, w := range c.Equipment.Weapons {
+		opts.Weapons = addUnique(opts.Weapons, w.Name)
+	}
+	for _, item := range c.Inventory {
+		if item.Weapon != nil {
+			opts.Weapons = addUnique(opts.Weapons, item.Name)
+			continue
+		}
+		opts.Items = addUnique(opts.Items, item.Name)
+	}
+
+	opts.Spells = addUnique(opts.Spells, c.Spells.Cantrips...)
+	for _, s := range c.Spells.Known {
+		opts.Spells = addUnique(opts.Spells, s.Name)
+	}
+
+	sort.Strings(opts.Weapons)
+	sort.Strings(opts.Items)
+	sort.Strings(opts.Spells)
+	return opts
+}
+
+// SkillNames renders the skill list for a prompt.
+func (o ActionOptions) SkillNames() []string {
+	names := make([]string, 0, len(o.Skills))
+	for _, s := range o.Skills {
+		names = append(names, string(s))
+	}
+	return names
+}
+
+func listOrNone(values []string) string {
+	if len(values) == 0 {
+		return "(none)"
+	}
+	return strings.Join(values, ", ")
+}
+
+// Prompt renders the options as the closed lists a parser must choose from.
+func (o ActionOptions) Prompt() string {
+	var b strings.Builder
+	fmt.Fprintf(&b, "Actor: %s\n", o.Actor)
+	fmt.Fprintf(&b, "Targets in play: %s\n", listOrNone(o.Targets))
+	fmt.Fprintf(&b, "Weapons carried: %s\n", listOrNone(o.Weapons))
+	fmt.Fprintf(&b, "Spells known: %s\n", listOrNone(o.Spells))
+	fmt.Fprintf(&b, "Items carried: %s\n", listOrNone(o.Items))
+	fmt.Fprintf(&b, "Skills: %s", listOrNone(o.SkillNames()))
+	return b.String()
+}
+
+// Normalise tidies a parsed intent: lowercases the enumerations, maps spaces
+// to underscores, and clamps the suggested DC into the table's range.
+//
+// Models are inconsistent about casing and spacing, and rejecting "Sleight of
+// Hand" for not being "sleight_of_hand" would be pedantry rather than safety.
+func (i *Intent) Normalise() {
+	slug := func(s string) string {
+		return strings.ReplaceAll(strings.ToLower(strings.TrimSpace(s)), " ", "_")
+	}
+
+	i.Action = IntentAction(slug(string(i.Action)))
+	i.Confidence = Confidence(slug(string(i.Confidence)))
+	if i.Skill != "" {
+		i.Skill = Skill(slug(string(i.Skill)))
+	}
+	if i.Ability != "" {
+		i.Ability = Ability(slug(string(i.Ability)))
+	}
+
+	i.Actor = strings.TrimSpace(i.Actor)
+	i.Target = strings.TrimSpace(i.Target)
+	i.Weapon = strings.TrimSpace(i.Weapon)
+	i.Spell = strings.TrimSpace(i.Spell)
+	i.Item = strings.TrimSpace(i.Item)
+
+	// A skill check with no ability named can infer it from the skill.
+	if i.Skill != "" && i.Skill.Valid() && i.Ability == "" {
+		i.Ability = i.Skill.Ability()
+	}
+
+	if i.Confidence == "" {
+		i.Confidence = ConfidenceMedium
+	}
+	if i.SuggestedDC != 0 {
+		if i.SuggestedDC < 5 {
+			i.SuggestedDC = 5
+		}
+		if i.SuggestedDC > 30 {
+			i.SuggestedDC = 30
+		}
+	}
+}
+
+// Validate checks an intent against what the character can actually do.
+//
+// The parser is a language model and will occasionally name a weapon the
+// character is not carrying. Catching that here turns a hallucination into a
+// clarifying question rather than an illegal action.
+func (i Intent) Validate(opts ActionOptions) error {
+	var problems []string
+
+	if !i.Action.Valid() {
+		return Invalid("unknown intent action %q", i.Action)
+	}
+	if !i.Confidence.Valid() {
+		problems = append(problems, fmt.Sprintf("unknown confidence %q", i.Confidence))
+	}
+
+	switch i.Action {
+	case IntentAttack:
+		if i.Target == "" {
+			problems = append(problems, "an attack needs a target")
+		} else if len(opts.Targets) > 0 && !containsFold(opts.Targets, i.Target) {
+			problems = append(problems, fmt.Sprintf("%q is not a creature in play", i.Target))
+		}
+		if i.Weapon != "" && len(opts.Weapons) > 0 && !containsFold(opts.Weapons, i.Weapon) {
+			problems = append(problems, fmt.Sprintf("%s is not carrying %q", opts.Actor, i.Weapon))
+		}
+
+	case IntentSkillCheck:
+		if i.Skill == "" {
+			problems = append(problems, "a skill check needs a skill")
+		} else if !i.Skill.Valid() {
+			problems = append(problems, fmt.Sprintf("%q is not a 5e skill", i.Skill))
+		}
+
+	case IntentSavingThrow:
+		if !i.Ability.Valid() {
+			problems = append(problems, fmt.Sprintf("%q is not an ability", i.Ability))
+		}
+
+	case IntentCastSpell:
+		if i.Spell == "" {
+			problems = append(problems, "casting needs a spell")
+		} else if len(opts.Spells) > 0 && !containsFold(opts.Spells, i.Spell) {
+			problems = append(problems, fmt.Sprintf("%s does not know %q", opts.Actor, i.Spell))
+		}
+
+	case IntentUseItem:
+		if i.Item == "" {
+			problems = append(problems, "using an item needs an item")
+		} else if len(opts.Items) > 0 && !containsFold(opts.Items, i.Item) {
+			problems = append(problems, fmt.Sprintf("%s is not carrying %q", opts.Actor, i.Item))
+		}
+
+	case IntentUnclear:
+		if i.Clarification == "" {
+			problems = append(problems, "an unclear intent must supply a clarifying question")
+		}
+	}
+
+	if len(problems) > 0 {
+		return Invalid("intent does not fit the situation: %s", strings.Join(problems, "; "))
+	}
+	return nil
+}
+
+// AsUnclear converts an intent into a request for clarification, which is what
+// to do when validation fails rather than resolving something wrong.
+func (i Intent) AsUnclear(question string) Intent {
+	return Intent{
+		Action:        IntentUnclear,
+		Actor:         i.Actor,
+		Confidence:    ConfidenceLow,
+		Clarification: question,
+		Rationale:     i.Rationale,
+		RawInput:      i.RawInput,
+	}
+}
+
+func containsFold(haystack []string, needle string) bool {
+	for _, s := range haystack {
+		if strings.EqualFold(strings.TrimSpace(s), strings.TrimSpace(needle)) {
+			return true
+		}
+	}
+	return false
+}
