@@ -91,12 +91,26 @@ func ResolveCheck(roll D20Result, dc int) CheckOutcome {
 	return OutcomeFailure
 }
 
+// NaturalCrit is the natural d20 roll that scores a critical hit for anyone
+// without a feature that widens the range.
+const NaturalCrit = 20
+
 // ResolveAttack compares an attack roll against a target's armor class.
-func ResolveAttack(roll D20Result, targetAC int) AttackOutcome {
+//
+// critRange is the lowest natural roll that scores a critical: 20 for most
+// characters, but 19 for a Champion fighter from level 3 and 18 from 15. Pass
+// NaturalCrit when the attacker has no such feature -- hardcoding 20 here
+// silently denied Champions the one thing their archetype does.
+func ResolveAttack(roll D20Result, targetAC, critRange int) AttackOutcome {
+	if critRange < 1 || critRange > NaturalCrit {
+		critRange = NaturalCrit
+	}
+
 	switch {
 	case roll.IsNatural1():
 		return AttackFumble
-	case roll.IsNatural20():
+	case roll.Natural >= critRange:
+		// A roll in the critical range always hits, whatever the AC.
 		return AttackCritical
 	case roll.Total >= targetAC:
 		return AttackHit

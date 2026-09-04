@@ -142,7 +142,14 @@ func (a ArmorProperties) EffectiveAC(dexModifier int) int {
 // Weapon and Armor are optional blocks carrying the mechanics for their kind;
 // plain gear leaves both nil.
 type InventoryItem struct {
-	ItemID      string   `json:"item_id" bson:"item_id"`
+	ItemID string `json:"item_id" bson:"item_id"`
+
+	// Key is a stable slug for the *kind* of item ("longsword",
+	// "hand_crossbow"), as distinct from ItemID which identifies this
+	// particular copy. Proficiency is granted by key, so a rogue can be
+	// proficient with rapiers without being proficient with martial weapons.
+	Key string `json:"key,omitempty" bson:"key,omitempty"`
+
 	Name        string   `json:"name" bson:"name"`
 	Kind        ItemKind `json:"kind" bson:"kind"`
 	Quantity    int      `json:"quantity" bson:"quantity"`
@@ -150,8 +157,23 @@ type InventoryItem struct {
 	Equipped    bool     `json:"equipped" bson:"equipped"`
 	Description string   `json:"description" bson:"description"`
 
+	// RequiresAttunement marks a magic item that only works once attuned, and
+	// Attuned records whether it currently is. A character may hold three at
+	// once.
+	RequiresAttunement bool `json:"requires_attunement,omitempty" bson:"requires_attunement,omitempty"`
+	Attuned            bool `json:"attuned,omitempty" bson:"attuned,omitempty"`
+
 	Weapon *WeaponProperties `json:"weapon,omitempty" bson:"weapon,omitempty"`
 	Armor  *ArmorProperties  `json:"armor,omitempty" bson:"armor,omitempty"`
+}
+
+// TotalWeight is the weight of the whole stack.
+func (i InventoryItem) TotalWeight() float64 {
+	qty := i.Quantity
+	if qty < 1 {
+		qty = 1
+	}
+	return i.Weight * float64(qty)
 }
 
 // Equipment represents equipped items.

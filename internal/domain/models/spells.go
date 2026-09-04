@@ -49,6 +49,36 @@ type Spells struct {
 	Prepared []string `json:"prepared,omitempty" bson:"prepared,omitempty"`
 
 	Slots []SpellSlot `json:"slots" bson:"slots"`
+
+	// PactSlots is the warlock's Pact Magic pool. It is stored separately
+	// because it never merges with ordinary slots and returns on a short
+	// rest rather than a long one.
+	PactSlots SpellSlot `json:"pact_slots" bson:"pact_slots"`
+}
+
+// AvailablePactSlots returns how many pact magic slots remain.
+func (s *Spells) AvailablePactSlots() int {
+	return s.PactSlots.Available()
+}
+
+// ExpendPactSlot spends one pact magic slot.
+//
+// Pact slots are always cast at the warlock's highest level, so unlike
+// ExpendSlot there is no level to choose.
+func (s *Spells) ExpendPactSlot() error {
+	if s.PactSlots.Total < 1 {
+		return Invalid("character has no pact magic slots")
+	}
+	if s.PactSlots.Available() < 1 {
+		return Invalid("no pact magic slots remaining")
+	}
+	s.PactSlots.Expended++
+	return nil
+}
+
+// RestorePactSlots returns every pact slot, as a short or long rest does.
+func (s *Spells) RestorePactSlots() {
+	s.PactSlots.Expended = 0
 }
 
 // SlotsAt returns the slot record for a level, and whether the caster has any

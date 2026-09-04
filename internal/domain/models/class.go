@@ -63,14 +63,20 @@ type ClassDefinition struct {
 	// but clerics, sorcerers and warlocks decide at 1 and druids and wizards
 	// at 2.
 	SubclassLevel int
-	Subclasses    []string
-
-	// SubclassCasters names archetypes that grant spellcasting to an
-	// otherwise non-casting class, with their own progression.
-	SubclassCasters map[string]SubclassCasting
+	Subclasses    []SubclassDefinition
 
 	ArmorProficiencies  []string
 	WeaponProficiencies []string
+
+	// MulticlassSkillChoices is the extra skill granted for multiclassing
+	// into this class. Only bard, ranger and rogue give one.
+	MulticlassSkillChoices int
+
+	// MulticlassProficiencies is the reduced set granted when this class is
+	// taken as a later class. Multiclassing never grants everything a first
+	// level in the class would: a fighter taken second brings medium armour
+	// but not heavy.
+	MulticlassProficiencies Proficiencies
 
 	// MulticlassPrerequisites is satisfied when *any* inner group is fully
 	// met, which is how the PHB expresses fighter's "Strength 13 or
@@ -82,6 +88,35 @@ type ClassDefinition struct {
 type SubclassCasting struct {
 	Ability     Ability
 	Progression CasterProgression
+}
+
+// SourcePHB marks content from the Player's Handbook. The field exists so
+// material from other books can be added later without guessing where an
+// entry came from.
+const SourcePHB = "PHB"
+
+// SubclassDefinition is an archetype and whatever mechanics it carries.
+//
+// Archetypes were a list of names, which was enough to validate a sheet but
+// not to play one: a Champion crits on 19 and an Eldritch Knight casts spells,
+// and neither is expressible as a string.
+type SubclassDefinition struct {
+	Key    string
+	Name   string
+	Source string
+
+	// Casting is set for archetypes that grant spellcasting to a class that
+	// otherwise has none.
+	Casting *SubclassCasting
+
+	// CritRangeAt maps a class level to the lowest natural d20 roll that
+	// scores a critical hit from then on. Only the Champion improves it.
+	CritRangeAt map[int]int
+}
+
+// phbSub builds a plain PHB archetype with no extra mechanics.
+func phbSub(key, name string) SubclassDefinition {
+	return SubclassDefinition{Key: key, Name: name, Source: SourcePHB}
 }
 
 // anyOf builds a prerequisite list of alternatives.
@@ -103,9 +138,10 @@ var ClassTable = map[Class]ClassDefinition{
 			SkillNature, SkillPerception, SkillSurvival},
 		Progression:             CasterNone,
 		SubclassLevel:           3,
-		Subclasses:              []string{"berserker", "totem_warrior"},
+		Subclasses:              []SubclassDefinition{phbSub("berserker", "Berserker"), phbSub("totem_warrior", "Totem Warrior")},
 		ArmorProficiencies:      []string{"light", "medium", "shields"},
 		WeaponProficiencies:     []string{"simple", "martial"},
+		MulticlassProficiencies: Proficiencies{Armor: []string{ProfShields}, Weapons: []string{ProfSimpleWeapons, ProfMartialWeapons}},
 		MulticlassPrerequisites: anyOf(allOf(min13(AbilityStrength))),
 	},
 	ClassBard: {
@@ -117,9 +153,11 @@ var ClassTable = map[Class]ClassDefinition{
 		SpellcastingAbility:     AbilityCharisma,
 		Progression:             CasterFull,
 		SubclassLevel:           3,
-		Subclasses:              []string{"lore", "valor"},
+		Subclasses:              []SubclassDefinition{phbSub("lore", "College of Lore"), phbSub("valor", "College of Valor")},
 		ArmorProficiencies:      []string{"light"},
 		WeaponProficiencies:     []string{"simple", "hand_crossbow", "longsword", "rapier", "shortsword"},
+		MulticlassSkillChoices:  1,
+		MulticlassProficiencies: Proficiencies{Armor: []string{ProfLightArmor}, Tools: []string{"musical_instrument"}},
 		MulticlassPrerequisites: anyOf(allOf(min13(AbilityCharisma))),
 	},
 	ClassCleric: {
@@ -131,10 +169,15 @@ var ClassTable = map[Class]ClassDefinition{
 		SpellcastingAbility: AbilityWisdom,
 		Progression:         CasterFull,
 		SubclassLevel:       1,
-		Subclasses: []string{"knowledge", "life", "light", "nature", "tempest",
-			"trickery", "war"},
+		Subclasses: []SubclassDefinition{
+			phbSub("knowledge", "Knowledge Domain"), phbSub("life", "Life Domain"),
+			phbSub("light", "Light Domain"), phbSub("nature", "Nature Domain"),
+			phbSub("tempest", "Tempest Domain"), phbSub("trickery", "Trickery Domain"),
+			phbSub("war", "War Domain"),
+		},
 		ArmorProficiencies:      []string{"light", "medium", "shields"},
 		WeaponProficiencies:     []string{"simple"},
+		MulticlassProficiencies: Proficiencies{Armor: []string{ProfLightArmor, ProfMediumArmor, ProfShields}},
 		MulticlassPrerequisites: anyOf(allOf(min13(AbilityWisdom))),
 	},
 	ClassDruid: {
@@ -147,10 +190,11 @@ var ClassTable = map[Class]ClassDefinition{
 		SpellcastingAbility: AbilityWisdom,
 		Progression:         CasterFull,
 		SubclassLevel:       2,
-		Subclasses:          []string{"land", "moon"},
+		Subclasses:          []SubclassDefinition{phbSub("land", "Circle of the Land"), phbSub("moon", "Circle of the Moon")},
 		ArmorProficiencies:  []string{"light", "medium", "shields"},
 		WeaponProficiencies: []string{"club", "dagger", "dart", "javelin", "mace",
 			"quarterstaff", "scimitar", "sickle", "sling", "spear"},
+		MulticlassProficiencies: Proficiencies{Armor: []string{ProfLightArmor, ProfMediumArmor, ProfShields}},
 		MulticlassPrerequisites: anyOf(allOf(min13(AbilityWisdom))),
 	},
 	ClassFighter: {
@@ -162,13 +206,23 @@ var ClassTable = map[Class]ClassDefinition{
 			SkillHistory, SkillInsight, SkillIntimidation, SkillPerception, SkillSurvival},
 		Progression:   CasterNone,
 		SubclassLevel: 3,
-		Subclasses:    []string{"champion", "battle_master", "eldritch_knight"},
-		SubclassCasters: map[string]SubclassCasting{
-			"eldritch_knight": {Ability: AbilityIntelligence, Progression: CasterThird},
+		Subclasses: []SubclassDefinition{
+			{
+				Key: "champion", Name: "Champion", Source: SourcePHB,
+				// Improved Critical at 3, Superior Critical at 15.
+				CritRangeAt: map[int]int{3: 19, 15: 18},
+			},
+			phbSub("battle_master", "Battle Master"),
+			{
+				Key: "eldritch_knight", Name: "Eldritch Knight", Source: SourcePHB,
+				Casting: &SubclassCasting{Ability: AbilityIntelligence, Progression: CasterThird},
+			},
 		},
+
 		ArmorProficiencies:  []string{"light", "medium", "heavy", "shields"},
 		WeaponProficiencies: []string{"simple", "martial"},
 		// "Strength 13 or Dexterity 13" -- two alternatives, not both.
+		MulticlassProficiencies: Proficiencies{Armor: []string{ProfLightArmor, ProfMediumArmor, ProfShields}, Weapons: []string{ProfSimpleWeapons, ProfMartialWeapons}},
 		MulticlassPrerequisites: anyOf(
 			allOf(min13(AbilityStrength)),
 			allOf(min13(AbilityDexterity)),
@@ -183,9 +237,10 @@ var ClassTable = map[Class]ClassDefinition{
 			SkillInsight, SkillReligion, SkillStealth},
 		Progression:             CasterNone,
 		SubclassLevel:           3,
-		Subclasses:              []string{"open_hand", "shadow", "four_elements"},
+		Subclasses:              []SubclassDefinition{phbSub("open_hand", "Way of the Open Hand"), phbSub("shadow", "Way of Shadow"), phbSub("four_elements", "Way of the Four Elements")},
 		ArmorProficiencies:      nil,
 		WeaponProficiencies:     []string{"simple", "shortsword"},
+		MulticlassProficiencies: Proficiencies{Weapons: []string{ProfSimpleWeapons, "shortsword"}},
 		MulticlassPrerequisites: anyOf(allOf(min13(AbilityDexterity), min13(AbilityWisdom))),
 	},
 	ClassPaladin: {
@@ -198,9 +253,10 @@ var ClassTable = map[Class]ClassDefinition{
 		SpellcastingAbility:     AbilityCharisma,
 		Progression:             CasterHalf,
 		SubclassLevel:           3,
-		Subclasses:              []string{"devotion", "ancients", "vengeance"},
+		Subclasses:              []SubclassDefinition{phbSub("devotion", "Oath of Devotion"), phbSub("ancients", "Oath of the Ancients"), phbSub("vengeance", "Oath of Vengeance")},
 		ArmorProficiencies:      []string{"light", "medium", "heavy", "shields"},
 		WeaponProficiencies:     []string{"simple", "martial"},
+		MulticlassProficiencies: Proficiencies{Armor: []string{ProfLightArmor, ProfMediumArmor, ProfShields}, Weapons: []string{ProfSimpleWeapons, ProfMartialWeapons}},
 		MulticlassPrerequisites: anyOf(allOf(min13(AbilityStrength), min13(AbilityCharisma))),
 	},
 	ClassRanger: {
@@ -213,9 +269,11 @@ var ClassTable = map[Class]ClassDefinition{
 		SpellcastingAbility:     AbilityWisdom,
 		Progression:             CasterHalf,
 		SubclassLevel:           3,
-		Subclasses:              []string{"hunter", "beast_master"},
+		Subclasses:              []SubclassDefinition{phbSub("hunter", "Hunter"), phbSub("beast_master", "Beast Master")},
 		ArmorProficiencies:      []string{"light", "medium", "shields"},
 		WeaponProficiencies:     []string{"simple", "martial"},
+		MulticlassSkillChoices:  1,
+		MulticlassProficiencies: Proficiencies{Armor: []string{ProfLightArmor, ProfMediumArmor, ProfShields}, Weapons: []string{ProfSimpleWeapons, ProfMartialWeapons}},
 		MulticlassPrerequisites: anyOf(allOf(min13(AbilityDexterity), min13(AbilityWisdom))),
 	},
 	ClassRogue: {
@@ -228,12 +286,18 @@ var ClassTable = map[Class]ClassDefinition{
 			SkillPersuasion, SkillSleightOfHand, SkillStealth},
 		Progression:   CasterNone,
 		SubclassLevel: 3,
-		Subclasses:    []string{"thief", "assassin", "arcane_trickster"},
-		SubclassCasters: map[string]SubclassCasting{
-			"arcane_trickster": {Ability: AbilityIntelligence, Progression: CasterThird},
+		Subclasses: []SubclassDefinition{
+			phbSub("thief", "Thief"), phbSub("assassin", "Assassin"),
+			{
+				Key: "arcane_trickster", Name: "Arcane Trickster", Source: SourcePHB,
+				Casting: &SubclassCasting{Ability: AbilityIntelligence, Progression: CasterThird},
+			},
 		},
+
 		ArmorProficiencies:      []string{"light"},
 		WeaponProficiencies:     []string{"simple", "hand_crossbow", "longsword", "rapier", "shortsword"},
+		MulticlassSkillChoices:  1,
+		MulticlassProficiencies: Proficiencies{Armor: []string{ProfLightArmor}, Tools: []string{"thieves_tools"}},
 		MulticlassPrerequisites: anyOf(allOf(min13(AbilityDexterity))),
 	},
 	ClassSorcerer: {
@@ -246,9 +310,10 @@ var ClassTable = map[Class]ClassDefinition{
 		SpellcastingAbility:     AbilityCharisma,
 		Progression:             CasterFull,
 		SubclassLevel:           1,
-		Subclasses:              []string{"draconic_bloodline", "wild_magic"},
+		Subclasses:              []SubclassDefinition{phbSub("draconic_bloodline", "Draconic Bloodline"), phbSub("wild_magic", "Wild Magic")},
 		ArmorProficiencies:      nil,
 		WeaponProficiencies:     []string{"dagger", "dart", "sling", "quarterstaff", "light_crossbow"},
+		MulticlassProficiencies: Proficiencies{},
 		MulticlassPrerequisites: anyOf(allOf(min13(AbilityCharisma))),
 	},
 	ClassWarlock: {
@@ -261,9 +326,10 @@ var ClassTable = map[Class]ClassDefinition{
 		SpellcastingAbility:     AbilityCharisma,
 		Progression:             CasterPact,
 		SubclassLevel:           1,
-		Subclasses:              []string{"archfey", "fiend", "great_old_one"},
+		Subclasses:              []SubclassDefinition{phbSub("archfey", "The Archfey"), phbSub("fiend", "The Fiend"), phbSub("great_old_one", "The Great Old One")},
 		ArmorProficiencies:      []string{"light"},
 		WeaponProficiencies:     []string{"simple"},
+		MulticlassProficiencies: Proficiencies{Armor: []string{ProfLightArmor}, Weapons: []string{ProfSimpleWeapons}},
 		MulticlassPrerequisites: anyOf(allOf(min13(AbilityCharisma))),
 	},
 	ClassWizard: {
@@ -276,10 +342,15 @@ var ClassTable = map[Class]ClassDefinition{
 		SpellcastingAbility: AbilityIntelligence,
 		Progression:         CasterFull,
 		SubclassLevel:       2,
-		Subclasses: []string{"abjuration", "conjuration", "divination", "enchantment",
-			"evocation", "illusion", "necromancy", "transmutation"},
+		Subclasses: []SubclassDefinition{
+			phbSub("abjuration", "School of Abjuration"), phbSub("conjuration", "School of Conjuration"),
+			phbSub("divination", "School of Divination"), phbSub("enchantment", "School of Enchantment"),
+			phbSub("evocation", "School of Evocation"), phbSub("illusion", "School of Illusion"),
+			phbSub("necromancy", "School of Necromancy"), phbSub("transmutation", "School of Transmutation"),
+		},
 		ArmorProficiencies:      nil,
 		WeaponProficiencies:     []string{"dagger", "dart", "sling", "quarterstaff", "light_crossbow"},
+		MulticlassProficiencies: Proficiencies{},
 		MulticlassPrerequisites: anyOf(allOf(min13(AbilityIntelligence))),
 	},
 }
@@ -309,16 +380,35 @@ func (c Class) HitDie() int {
 
 // HasSubclass reports whether name is a valid archetype for this class.
 func (c Class) HasSubclass(name string) bool {
+	_, ok := c.Subclass(name)
+	return ok
+}
+
+// Subclass looks an archetype up by key.
+func (c Class) Subclass(key string) (SubclassDefinition, bool) {
 	def, ok := ClassTable[c]
 	if !ok {
-		return false
+		return SubclassDefinition{}, false
 	}
-	for _, s := range def.Subclasses {
-		if s == name {
-			return true
+	for _, sub := range def.Subclasses {
+		if sub.Key == key {
+			return sub, true
 		}
 	}
-	return false
+	return SubclassDefinition{}, false
+}
+
+// SubclassKeys lists the archetype keys for a class, in book order.
+func (c Class) SubclassKeys() []string {
+	def, ok := ClassTable[c]
+	if !ok {
+		return nil
+	}
+	keys := make([]string, 0, len(def.Subclasses))
+	for _, sub := range def.Subclasses {
+		keys = append(keys, sub.Key)
+	}
+	return keys
 }
 
 // ClassLevel is one class a character has levels in.
@@ -345,13 +435,30 @@ func (cl ClassLevel) Casting() (Ability, CasterProgression) {
 	if def.Progression != CasterNone {
 		return def.SpellcastingAbility, def.Progression
 	}
-	if sub, ok := def.SubclassCasters[cl.Subclass]; ok {
+	if sub, ok := cl.Class.Subclass(cl.Subclass); ok && sub.Casting != nil {
 		// Subclass casting only begins once the archetype is chosen.
 		if cl.Level >= def.SubclassLevel {
-			return sub.Ability, sub.Progression
+			return sub.Casting.Ability, sub.Casting.Progression
 		}
 	}
 	return "", CasterNone
+}
+
+// CritRange is the lowest natural d20 roll that scores a critical hit for this
+// class level, which is 20 unless an archetype improves it.
+func (cl ClassLevel) CritRange() int {
+	sub, ok := cl.Class.Subclass(cl.Subclass)
+	if !ok || sub.CritRangeAt == nil {
+		return NaturalCrit
+	}
+
+	best := NaturalCrit
+	for level, rng := range sub.CritRangeAt {
+		if cl.Level >= level && rng < best {
+			best = rng
+		}
+	}
+	return best
 }
 
 // MeetsMulticlassPrerequisites reports whether the given ability scores allow

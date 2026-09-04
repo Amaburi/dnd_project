@@ -53,7 +53,7 @@ a measured reason, not because a doc still mentions them:
 make run-dev    # run from source (sources .env first)
 make run        # build ./dnd-campaign-manager, then run it
 make build
-go test ./...   # 91 tests across models, handlers, ai, config, mongodb
+go test ./...   # 140 tests across models, handlers, ai, config, mongodb
 make lint       # golangci-lint (not vendored — install separately)
 ```
 
@@ -179,9 +179,89 @@ Multiclass rules that are easy to get wrong, all tested:
 - **Subclass casting starts at the subclass level** — an Eldritch Knight 2 casts nothing.
 - **Multiclass prerequisites are OR-of-ANDs**: fighter is "STR 13 or DEX 13", monk is
   "DEX 13 and WIS 13". Use `MeetsMulticlassPrerequisites`.
+- **Multiclassing into bard, ranger or rogue grants one extra skill**
+  (`MulticlassSkillChoices`); no other class does.
+
+**Subclasses carry mechanics, not just names.** `SubclassDefinition` holds a key, display
+name, `Source` (currently all `SourcePHB`), optional `Casting`, and `CritRangeAt`. Look
+them up with `Class.Subclass(key)`.
+
+**`ResolveAttack(roll, targetAC, critRange)` takes a crit range** — pass
+`Character.CritRange()`, not `NaturalCrit`, or a Champion silently loses the one thing
+their archetype does (19–20 from level 3, 18–20 from 15).
+
+**Budgets are enforced.** `SkillBudget()` = granted (race + background) + first class's
+choices + later classes' `MulticlassSkillChoices` + racial picks. `ExpertiseBudget()` is
+2 per grant (rogue at 1 and 6, bard at 3 and 10). `ValidateSheet` rejects exceeding either
+— checking only that each skill had *a* source let a rogue claim all eleven on their list.
+
+**Races are table-driven too**, and carry mechanics rather than trait names:
+
+- `RacialProficiencies(subrace)` grants real training — Dwarven Combat Training's four
+  weapons, a mountain dwarf's light/medium armour, elf and drow weapon training, a rock
+  gnome's tinker's tools. `ApplyClassDefaults` merges them, so a mountain dwarf wizard is
+  genuinely proficient in the chain shirt they wear.
+- `BonusHitPointsPerLevel` carries Dwarven Toughness, counted by
+  `ExpectedMaxHitPoints()` (full hit die at first level, class average after, plus CON and
+  the racial bonus each level).
+- **Draconic ancestry is a subrace**, not a trait name — all ten dragons, each with damage
+  type, breath shape, save ability and matching resistance. `Character.BreathWeapon()`
+  returns the weapon, dice for the level, and DC (8 + CON + proficiency).
+- **Humans require a subrace**: `standard` (+1 to all six) or `variant` (+1 to two, one
+  skill, one feat). The ability spread moved off the race onto the subraces, so a bare
+  `Race: RaceHuman` with no subrace now fails validation.
+- `AttackRollMode(item)` returns disadvantage for a **Small creature wielding a Heavy
+  weapon** and for exhaustion 3+. Carried on every `AttackProfile` as `Mode`.
+- Non-PHB races (Aasimar, Genasi, Goliath, Tabaxi, Firbolg) are included and tagged;
+  `RacesFromSource(SourcePHB)` filters to core.
+
+**Progression tables** live in `class_progression.go`: `CantripsKnown()`, `SpellsKnown()`
+(for classes that know a fixed list), `PreparedSpellLimit()` (ability mod + level, half
+level for paladins, minimum 1), and `ClassFeatures` / `FeaturesAtLevel` /
+`FeaturesThroughLevel`. `StartingEquipmentTable` covers creation kit.
+
+Two caveats on that data: `ClassFeatures` is a **display and planning reference**, not
+something resolution reads — resolution uses `ClassTable` and `SubclassDefinition`. And
+the Eldritch Knight / Arcane Trickster spells-known numbers are the least certain entries
+in the file; the code says so where they are defined.
+
+### Attacks, rests and encumbrance
+
+**Proficiencies live on the character** (`Character.Proficiencies`), not just in the class
+table — an attack bonus cannot be computed without knowing whether the wielder is trained.
+`ApplyClassDefaults()` populates them: the **first** class grants its full list, later
+classes only `MulticlassProficiencies` (a fighter taken second brings medium armour, never
+heavy). Backgrounds add tools; races add languages.
+
+`Character.AttackWith(item)` turns a weapon into an `AttackProfile` — the bridge to the
+dice roller:
+
+- proficiency bonus is added **only when proficient**; the ability modifier always applies
+- damage bonus is ability + magic, **never** proficiency, and is added once even on a crit
+- finesse picks the better of STR/DEX, ranged uses DEX, reach adds 5 feet
+- proficiency matches by weapon **category** *or* by `InventoryItem.Key`, which is how a
+  rogue gets rapiers without getting martial weapons
+
+**Two rests, and they do different things.** `ShortRest()` returns warlock pact slots and
+`RechargeShortRest` features. `LongRest()` does everything a short rest does plus hit
+points, all spell slots, half the hit dice and one level of exhaustion. Hit dice are spent
+one at a time via `SpendHitDie(die, rolled)` — the model owns the rules, the caller owns
+the randomness.
+
+**Pact slots are stored separately** (`Spells.PactSlots`) because they never merge with
+ordinary slots and come back on a *short* rest.
+
+**Penalties that were previously dead data are now applied.** `Speed()` subtracts 10 for
+heavy armour worn below its Strength requirement and applies exhaustion (halved at 2, zero
+at 5). `SkillRollMode()` returns disadvantage for Stealth in noisy armour and for any check
+at exhaustion 1+. `EffectiveHitPointMaximum()` halves at exhaustion 4.
+
+Also on the sheet: `Currency` (coins are fungible — `Spend` makes change, and 50 coins
+weigh a pound), `Inspiration`, attunement (`Attune`/`EndAttunement`, max 3), and
+encumbrance (`CarriedWeight` counts inventory *and* the purse).
 
 `ValidateSheet()` checks a sheet is legal 5e — subclass timing, subrace, prerequisites,
-skills drawn from a granted or class source, total level ≤ 20. **`CreateCharacter` runs it;
+skills drawn from a granted or class source, total level ≤ 20, no ability score above 20. **`CreateCharacter` runs it;
 `UpdateCharacter` deliberately does not**, so sheets predating a rules change stay
 editable. `ApplyClassDefaults()` fills in what the tables determine; `ReconcileSpellSlots()`
 adds slots on level up without refunding spent ones.

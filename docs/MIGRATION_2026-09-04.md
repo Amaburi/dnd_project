@@ -98,6 +98,45 @@ Then fix by hand what a script cannot infer:
 `CreateCharacter` now runs `ValidateSheet` — new characters must be legal 5e. Updates
 deliberately do not, so legacy sheets stay editable.
 
+## 3c. New sheet fields — additive, but one needs backfilling
+
+`proficiencies`, `currency` and `inspiration` were added, along with `key`,
+`requires_attunement` and `attuned` on inventory items, `recharge` on features, and
+`pact_slots` under `spells`. All default sensibly to empty, so **no migration is required
+to load existing characters**.
+
+One exception worth acting on: **`proficiencies` starts empty, and attack bonuses read it.**
+Until a character has armour and weapon proficiencies, every `AttackWith` result loses the
+proficiency bonus. Backfill by re-saving each character through `ApplyClassDefaults()`,
+which derives them from class, background and race.
+
+Weapon proficiency also matches on `InventoryItem.Key` (a slug like `longsword`), so
+existing weapons want a key set if a class grants them by name rather than by category.
+
+## 3d. Humans and dragonborn now require a subrace
+
+Two race changes are not purely additive:
+
+- **Human** gained subraces `standard` and `variant`. The +1-to-all-six spread moved off
+  the race onto `standard`, because a variant human raises two abilities and takes a feat
+  instead. A human with no subrace now gets **no ability bonuses** and fails
+  `ValidateSheet`.
+- **Dragonborn** now require a draconic ancestry (`red`, `gold`, `black`, …), since it
+  decides their breath weapon and resistance.
+
+```js
+// Existing humans were standard humans.
+db.characters.updateMany(
+  { "basic_info.race": "human", "basic_info.subrace": { $in: [null, ""] } },
+  { $set: { "basic_info.subrace": "standard" } }
+);
+// Dragonborn ancestry cannot be inferred -- list them and choose.
+db.characters.find({ "basic_info.race": "dragonborn" }, { name: 1 });
+```
+
+Racial proficiencies are also new and start empty, like class ones: re-save through
+`ApplyClassDefaults()` so armour and weapon training reach the sheet.
+
 ## 4. Skills and saving throws are no longer booleans
 
 Proficiency is four-valued (`""`, `"half"`, `"proficient"`, `"expertise"`) and the fields

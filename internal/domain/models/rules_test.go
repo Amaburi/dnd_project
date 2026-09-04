@@ -297,19 +297,19 @@ func TestRollModeCombine(t *testing.T) {
 // modifiers -- but only on attack rolls.
 func TestResolveAttackHonoursNaturalRolls(t *testing.T) {
 	nat20 := D20Result{Natural: 20, Modifier: -5, Total: 15}
-	if got := ResolveAttack(nat20, 30); got != AttackCritical {
+	if got := ResolveAttack(nat20, 30, NaturalCrit); got != AttackCritical {
 		t.Errorf("natural 20 against AC 30 = %s, want critical_hit", got)
 	}
 
 	nat1 := D20Result{Natural: 1, Modifier: 20, Total: 21}
-	if got := ResolveAttack(nat1, 5); got != AttackFumble {
+	if got := ResolveAttack(nat1, 5, NaturalCrit); got != AttackFumble {
 		t.Errorf("natural 1 against AC 5 = %s, want critical_miss", got)
 	}
 
-	if got := ResolveAttack(D20Result{Natural: 12, Modifier: 3, Total: 15}, 15); got != AttackHit {
+	if got := ResolveAttack(D20Result{Natural: 12, Modifier: 3, Total: 15}, 15, NaturalCrit); got != AttackHit {
 		t.Errorf("meeting AC exactly = %s, want hit", got)
 	}
-	if got := ResolveAttack(D20Result{Natural: 12, Modifier: 3, Total: 15}, 16); got != AttackMiss {
+	if got := ResolveAttack(D20Result{Natural: 12, Modifier: 3, Total: 15}, 16, NaturalCrit); got != AttackMiss {
 		t.Errorf("one below AC = %s, want miss", got)
 	}
 }

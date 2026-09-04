@@ -6,8 +6,11 @@ import (
 )
 
 func TestRaceTableIsConsistent(t *testing.T) {
-	if len(Races) != 9 {
-		t.Fatalf("got %d races, want the 9 PHB races", len(Races))
+	if got := len(RacesFromSource(SourcePHB)); got != 9 {
+		t.Fatalf("got %d PHB races, want 9", got)
+	}
+	if len(Races) < 9 {
+		t.Fatalf("got %d races in total, want at least the 9 PHB ones", len(Races))
 	}
 	for _, r := range Races {
 		def, ok := RaceTable[r]
@@ -96,10 +99,19 @@ func TestApplyRacialBonuses(t *testing.T) {
 		t.Errorf("a third ability choice was applied: STR %d, want 15", got.Strength)
 	}
 
-	// Humans raise everything by one.
-	got = ApplyRacialBonuses(base, RaceHuman, "", nil)
+	// A standard human raises everything by one.
+	got = ApplyRacialBonuses(base, RaceHuman, "standard", nil)
 	if got.Strength != 16 || got.Charisma != 9 {
-		t.Errorf("human = STR %d CHA %d, want 16 and 9", got.Strength, got.Charisma)
+		t.Errorf("standard human = STR %d CHA %d, want 16 and 9", got.Strength, got.Charisma)
+	}
+
+	// A variant human raises two abilities of their choice instead.
+	got = ApplyRacialBonuses(base, RaceHuman, "variant", []Ability{AbilityStrength, AbilityConstitution})
+	if got.Strength != 16 || got.Constitution != 15 {
+		t.Errorf("variant human = STR %d CON %d, want 16 and 15", got.Strength, got.Constitution)
+	}
+	if got.Charisma != 8 {
+		t.Errorf("variant human raised an unchosen ability to %d, want 8", got.Charisma)
 	}
 }
 
@@ -236,7 +248,7 @@ func TestValidateSheetRejectsUngrantedSkill(t *testing.T) {
 func TestValidateSheetSkipsSkillCheckForUnconstrainedClasses(t *testing.T) {
 	c := &Character{
 		BasicInfo: BasicInfo{
-			Race: RaceHuman, Background: BackgroundEntertainer,
+			Race: RaceHuman, Subrace: "standard", Background: BackgroundEntertainer,
 			Classes: []ClassLevel{{Class: ClassBard, Subclass: "lore", Level: 3}},
 		},
 		AbilityScores: AbilityScores{Charisma: 16},

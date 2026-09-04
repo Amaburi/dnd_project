@@ -33,6 +33,11 @@ type Character struct {
 	Skills       SkillProficiencies       `json:"skills" bson:"skills"`
 	SavingThrows SavingThrowProficiencies `json:"saving_throws" bson:"saving_throws"`
 
+	// Proficiencies are the trained armour, weapon, tool and language
+	// categories. Attack bonuses depend on these, so they live on the sheet
+	// rather than being looked up in the class table on every roll.
+	Proficiencies Proficiencies `json:"proficiencies" bson:"proficiencies"`
+
 	Inventory            []InventoryItem `json:"inventory" bson:"inventory"`
 	Equipment            Equipment       `json:"equipment" bson:"equipment"`
 	Spells               Spells          `json:"spells" bson:"spells"`
@@ -43,6 +48,11 @@ type Character struct {
 	// six degrees rather than being present or absent.
 	Conditions []Condition `json:"conditions" bson:"conditions"`
 	Exhaustion int         `json:"exhaustion" bson:"exhaustion"`
+
+	// Currency is the coin purse, and Inspiration the DM-granted flag that
+	// buys a single advantage.
+	Currency    Currency `json:"currency" bson:"currency"`
+	Inspiration bool     `json:"inspiration" bson:"inspiration"`
 
 	Relationships []Relationship `json:"relationships" bson:"relationships"`
 
@@ -221,12 +231,54 @@ func (d DeathSaves) Dead() bool { return d.Failures >= DeathSaveThreshold }
 // Reset clears both tallies, as regaining any hit points does.
 func (d *DeathSaves) Reset() { d.Successes, d.Failures = 0, 0 }
 
+// FeatureRecharge is the rest at which a limited-use feature returns.
+//
+// The distinction matters: Action Surge and Second Wind come back on a short
+// rest while a paladin's Divine Sense needs a long one, so a single "per day"
+// counter reset only by long rests under-counts half the game's features.
+type FeatureRecharge string
+
+const (
+	RechargeNone      FeatureRecharge = ""
+	RechargeShortRest FeatureRecharge = "short_rest"
+	RechargeLongRest  FeatureRecharge = "long_rest"
+)
+
 // Feature represents a character feature or ability
 type Feature struct {
 	Name        string `json:"name" bson:"name"`
 	Description string `json:"description" bson:"description"`
-	UsesPerDay  *int   `json:"uses_per_day" bson:"uses_per_day"` // nil means unlimited
-	UsesSpent   int    `json:"uses_spent,omitempty" bson:"uses_spent,omitempty"`
+
+	// UsesPerDay is the maximum number of uses; nil means unlimited.
+	UsesPerDay *int            `json:"uses_per_day" bson:"uses_per_day"`
+	UsesSpent  int             `json:"uses_spent,omitempty" bson:"uses_spent,omitempty"`
+	Recharge   FeatureRecharge `json:"recharge,omitempty" bson:"recharge,omitempty"`
+}
+
+// UsesRemaining reports how many uses are left, and whether the feature is
+// limited at all.
+func (f Feature) UsesRemaining() (int, bool) {
+	if f.UsesPerDay == nil {
+		return 0, false
+	}
+	left := *f.UsesPerDay - f.UsesSpent
+	if left < 0 {
+		left = 0
+	}
+	return left, true
+}
+
+// Use spends one use of a limited feature.
+func (f *Feature) Use() error {
+	left, limited := f.UsesRemaining()
+	if !limited {
+		return nil
+	}
+	if left < 1 {
+		return Invalid("%s has no uses remaining", f.Name)
+	}
+	f.UsesSpent++
+	return nil
 }
 
 // BackgroundStory contains character narrative information
@@ -332,13 +384,166 @@ func (c *Character) SpellAttackModifier() int {
 	return c.ProficiencyBonus() + c.AbilityModifier(c.Spells.SpellcastingAbility)
 }
 
-// Speed is the walking speed granted by race and subrace, unless the
-// character carries an explicit override.
-func (c *Character) Speed() int {
+// BaseSpeed is the walking speed from race and subrace, before armour or
+// exhaustion is taken into account.
+func (c *Character) BaseSpeed() int {
 	if c.CombatStats.Speed > 0 {
 		return c.CombatStats.Speed
 	}
 	return c.BasicInfo.Race.Speed(c.BasicInfo.Subrace)
+}
+
+// Speed is the walking speed actually available, after the two penalties the
+// sheet already had the data for but never applied: heavy armour worn below
+// its Strength requirement costs 10 feet, and exhaustion halves speed at
+// level 2 and removes it entirely at level 5.
+func (c *Character) Speed() int {
+	speed := c.BaseSpeed()
+
+	if armor := c.Equipment.Armor; armor != nil && armor.Armor != nil {
+		req := armor.Armor.StrengthRequirement
+		if req > 0 && c.AbilityScores.Strength < req {
+			speed -= 10
+		}
+	}
+
+	effects := ExhaustionEffectsFor(c.Exhaustion)
+	if effects.SpeedZero {
+		return 0
+	}
+	if effects.SpeedHalved {
+		speed /= 2
+	}
+
+	if speed < 0 {
+		speed = 0
+	}
+	return speed
+}
+
+// ExpectedMaxHitPoints is the hit point maximum a character should have.
+//
+// The first level of the first class takes the full hit die; every level after
+// takes the class die's average, rounded up as the PHB's fixed-value option
+// does. The Constitution modifier applies once per level, as does a subrace's
+// per-level bonus -- which is the whole of a hill dwarf's Dwarven Toughness
+// and previously had nowhere to be counted.
+//
+// Rolling for hit points is common, so this is an expectation to compare
+// against rather than a value that overwrites the sheet.
+func (c *Character) ExpectedMaxHitPoints() int {
+	conMod := c.AbilityModifier(AbilityConstitution)
+	racial := c.BasicInfo.Race.BonusHitPointsPerLevel(c.BasicInfo.Subrace)
+
+	total, first := 0, true
+	for _, cl := range c.BasicInfo.Classes {
+		die := cl.Class.HitDie()
+		if die == 0 {
+			continue
+		}
+		average := die/2 + 1
+
+		levels := cl.Level
+		if first {
+			total += die + conMod + racial
+			levels--
+			first = false
+		}
+		total += levels * (average + conMod + racial)
+	}
+
+	if total < 1 {
+		return 1
+	}
+	return total
+}
+
+// DamageResistances returns the damage types the character's race resists.
+func (c *Character) DamageResistances() []DamageType {
+	return c.BasicInfo.Race.DamageResistances(c.BasicInfo.Subrace)
+}
+
+// BreathWeapon returns a dragonborn's breath, its damage dice at the
+// character's level, and the save DC to resist it.
+//
+// The DC is 8 + Constitution modifier + proficiency bonus, the same shape as a
+// spell save DC.
+func (c *Character) BreathWeapon() (weapon BreathWeapon, dice string, dc int, ok bool) {
+	weapon, ok = c.BasicInfo.Race.Breath(c.BasicInfo.Subrace)
+	if !ok {
+		return BreathWeapon{}, "", 0, false
+	}
+	dice = BreathWeaponDice(c.Level())
+	dc = 8 + c.AbilityModifier(AbilityConstitution) + c.ProficiencyBonus()
+	return weapon, dice, dc, true
+}
+
+// EffectiveHitPointMaximum is the maximum after exhaustion, which halves it
+// from level 4.
+func (c *Character) EffectiveHitPointMaximum() int {
+	max := c.CombatStats.HitPoints.Maximum
+	if ExhaustionEffectsFor(c.Exhaustion).HitPointMaximumHalved {
+		max /= 2
+	}
+	return max
+}
+
+// ExhaustionEffects returns the penalties currently in force.
+func (c *Character) ExhaustionEffects() ExhaustionEffects {
+	return ExhaustionEffectsFor(c.Exhaustion)
+}
+
+// SkillRollMode reports whether a skill check is made with advantage or
+// disadvantage from the character's own state.
+//
+// Two sources are wired up here: armour that imposes disadvantage on Stealth,
+// and exhaustion, which imposes disadvantage on every ability check from
+// level 1. Situational sources are the caller's to combine with RollMode.Combine.
+func (c *Character) SkillRollMode(s Skill) RollMode {
+	mode := RollNormal
+
+	if ExhaustionEffectsFor(c.Exhaustion).DisadvantageOnAbilityChecks {
+		mode = mode.Combine(RollDisadvantage)
+	}
+
+	if s == SkillStealth {
+		if armor := c.Equipment.Armor; armor != nil && armor.Armor != nil && armor.Armor.StealthDisadvantage {
+			mode = mode.Combine(RollDisadvantage)
+		}
+	}
+
+	return mode
+}
+
+// AttackRollMode reports advantage or disadvantage on an attack with a weapon
+// from the character's own state.
+//
+// Two sources: exhaustion from level 3, and the size rule that a Small
+// creature has disadvantage with Heavy weapons -- a halfling swinging a
+// greataxe. Both were representable in the model but neither was read.
+func (c *Character) AttackRollMode(item InventoryItem) RollMode {
+	mode := RollNormal
+
+	if ExhaustionEffectsFor(c.Exhaustion).DisadvantageOnAttacksAndSaves {
+		mode = mode.Combine(RollDisadvantage)
+	}
+
+	if c.Size() == SizeTiny || c.Size() == SizeSmall {
+		if item.Weapon != nil && item.Weapon.HasProperty(PropertyHeavy) {
+			mode = mode.Combine(RollDisadvantage)
+		}
+	}
+
+	return mode
+}
+
+// SavingThrowRollMode reports advantage or disadvantage on a saving throw from
+// the character's own state. Exhaustion applies from level 3.
+func (c *Character) SavingThrowRollMode(Ability) RollMode {
+	if ExhaustionEffectsFor(c.Exhaustion).DisadvantageOnAttacksAndSaves {
+		return RollDisadvantage
+	}
+	return RollNormal
 }
 
 // Size is the creature size from the character's race.
@@ -408,6 +613,75 @@ func (c *Character) GrantedSaveProficiencies() []Ability {
 // CarryingCapacity is Strength score times 15, in pounds.
 func (c *Character) CarryingCapacity() int {
 	return c.AbilityScores.Strength * 15
+}
+
+// PushDragLiftCapacity is twice the carrying capacity, the weight a character
+// can shift without carrying.
+func (c *Character) PushDragLiftCapacity() int {
+	return c.CarryingCapacity() * 2
+}
+
+// CarriedWeight totals the inventory and coin purse in pounds.
+//
+// Equipment is not added separately: equipped items are expected to also
+// appear in Inventory, which is how a sheet lists them.
+func (c *Character) CarriedWeight() float64 {
+	total := c.Currency.Weight()
+	for _, item := range c.Inventory {
+		total += item.TotalWeight()
+	}
+	return total
+}
+
+// IsOverloaded reports whether the character is carrying more than they can.
+func (c *Character) IsOverloaded() bool {
+	return c.CarriedWeight() > float64(c.CarryingCapacity())
+}
+
+// MaxAttunedItems is how many magic items a character can be attuned to.
+const MaxAttunedItems = 3
+
+// AttunedItems lists the items the character is currently attuned to.
+func (c *Character) AttunedItems() []InventoryItem {
+	var out []InventoryItem
+	for _, item := range c.Inventory {
+		if item.Attuned {
+			out = append(out, item)
+		}
+	}
+	return out
+}
+
+// Attune attunes to an item by its ItemID.
+func (c *Character) Attune(itemID string) error {
+	for i := range c.Inventory {
+		if c.Inventory[i].ItemID != itemID {
+			continue
+		}
+		if !c.Inventory[i].RequiresAttunement {
+			return Invalid("%s does not require attunement", c.Inventory[i].Name)
+		}
+		if c.Inventory[i].Attuned {
+			return nil
+		}
+		if len(c.AttunedItems()) >= MaxAttunedItems {
+			return Invalid("already attuned to %d items, the maximum", MaxAttunedItems)
+		}
+		c.Inventory[i].Attuned = true
+		return nil
+	}
+	return Invalid("no item with id %q in inventory", itemID)
+}
+
+// EndAttunement releases an attunement.
+func (c *Character) EndAttunement(itemID string) error {
+	for i := range c.Inventory {
+		if c.Inventory[i].ItemID == itemID {
+			c.Inventory[i].Attuned = false
+			return nil
+		}
+	}
+	return Invalid("no item with id %q in inventory", itemID)
 }
 
 // HasCondition reports whether a condition is currently applied.
