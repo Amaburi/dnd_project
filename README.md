@@ -136,11 +136,18 @@ dnd-project/
 ## Development
 
 ### Running Tests
+
 ```bash
-make test              # All tests
-make test-unit         # Unit tests only
-make test-integration  # Integration tests
+make test              # offline: no database, no AI provider, nothing skipped
+make demo              # one full turn against a stub, free
+
+# Integration tests need a MongoDB. No Docker required -- point it anywhere.
+MONGODB_TEST_URI=mongodb://localhost:27017 make test-integration
+MONGODB_TEST_URI=mongodb://localhost:27017 make coverage-all
 ```
+
+Integration tests sit behind a `integration` build tag rather than skipping themselves, so
+the default suite never quietly passes over them.
 
 ### Code Linting
 ```bash

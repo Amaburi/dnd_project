@@ -1,4 +1,4 @@
-.PHONY: all build test lint run migrate seed clean deps
+.PHONY: all build test test-unit test-integration test-all coverage coverage-all lint run run-dev demo clean deps setup security
 
 # Variables
 BINARY_NAME=dnd-campaign-manager
@@ -23,23 +23,42 @@ deps:
 	go mod download
 	go mod tidy
 
-# Testing
+# Unit tests. Offline: no database, no AI provider, nothing skipped.
 test:
-	go test -v ./...
-	go test -v ./test/unit/...
+	go test ./...
 
-# Unit tests only
-test-unit:
-	go test -v ./internal/... ./pkg/...
-
-# Integration tests
+# Integration tests against a real MongoDB.
+#
+# They sit behind a build tag rather than skipping themselves, so `make test`
+# never quietly passes over them and this target either exercises a database or
+# fails saying why. Point it at anything: a local mongod, a container someone
+# else started, or a scratch Atlas cluster.
+#
+#   MONGODB_TEST_URI=mongodb://localhost:27017 make test-integration
+MONGODB_TEST_URI ?=
 test-integration:
-	go test -v ./test/integration/...
+	@test -n "$(MONGODB_TEST_URI)" || \
+		(echo "MONGODB_TEST_URI is not set, e.g. MONGODB_TEST_URI=mongodb://localhost:27017 make test-integration"; exit 1)
+	MONGODB_TEST_URI=$(MONGODB_TEST_URI) go test -tags=integration -count=1 ./...
 
-# Code coverage
+# Everything, which is what CI should run.
+test-all: test test-integration
+
+# Code coverage for the offline suite.
 coverage:
 	go test -coverprofile=coverage.out ./...
+	go tool cover -func=coverage.out | tail -1
 	go tool cover -html=coverage.out
+
+# Coverage including the integration tests, which is the number that reflects
+# the handlers and repositories. -coverpkg attributes coverage to the packages
+# being exercised rather than only the one holding the test.
+coverage-all:
+	@test -n "$(MONGODB_TEST_URI)" || \
+		(echo "MONGODB_TEST_URI is not set"; exit 1)
+	MONGODB_TEST_URI=$(MONGODB_TEST_URI) go test -tags=integration -count=1 \
+		-coverpkg=./internal/... -coverprofile=coverage.out ./...
+	go tool cover -func=coverage.out | tail -1
 
 # Linting
 lint:
@@ -49,20 +68,16 @@ lint:
 security:
 	go list -m all | nancy go.sum
 
-# Database migrations
-migrate:
-	go run ./cmd/migrator/main.go up
-
-# Seed data
-seed:
-	go run ./cmd/seed/main.go
-
 # Clean build artifacts
 clean:
 	rm -f $(BINARY_NAME)
 	rm -f coverage.out
 
+# Run the offline demo of one full turn: parse, resolve, narrate.
+demo:
+	go run ./examples
+
 # Setup development environment
 setup: deps
-	cp configs/config.yaml config.yaml
-	@echo "Edit config.yaml with your configuration"
+	cp .env.example .env
+	@echo "Edit .env with your MONGODB_URI and GROQ_API_KEY"

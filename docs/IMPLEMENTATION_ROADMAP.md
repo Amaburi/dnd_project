@@ -28,30 +28,30 @@ Establish project infrastructure, basic MongoDB integration, and core API endpoi
 ### Deliverables
 
 #### Week 1: Project Setup
-- [ ] Initialize Go module and project structure
-- [ ] Set up Gin HTTP server
-- [ ] Configure MongoDB connection
-- [ ] Create config.yaml with environment variables
-- [ ] Set up Docker Compose for local development
-- [ ] Configure logging (zerolog)
+- [x] Initialize Go module and project structure
+- [x] Set up Gin HTTP server
+- [x] Configure MongoDB connection
+- [x] Create config.yaml with environment variables
+- ~~Set up Docker Compose for local development~~ — cut, personal-use project
+- [x] Configure logging (zerolog)
 
 **Milestone**: Server runs locally, connects to MongoDB
 
 #### Week 2: Data Layer
-- [ ] Implement MongoDB client and repositories
-- [ ] Create data models (Campaign, Character)
-- [ ] Implement collection initialization
-- [ ] Set up indexes for performance
-- [ ] Write unit tests for data layer
+- [x] Implement MongoDB client and repositories
+- [x] Create data models (Campaign, Character)
+- [x] Implement collection initialization
+- [x] Set up indexes for performance
+- [x] Write unit tests for data layer
 
 **Milestone**: Can create and retrieve campaigns and characters
 
 #### Week 3: Basic API
-- [ ] Implement Campaign CRUD endpoints
-- [ ] Implement Character CRUD endpoints
-- [ ] Add request validation
+- [x] Implement Campaign CRUD endpoints
+- [x] Implement Character CRUD endpoints
+- [x] Add request validation
 - [ ] Create error handling middleware
-- [ ] Write integration tests for API
+- [x] Write integration tests for API
 
 **Milestone**: REST API fully functional for campaigns and characters
 
@@ -96,9 +96,9 @@ Week 3 Tasks:
 ```
 
 ### Success Criteria
-- [ ] Project compiles without errors
-- [ ] MongoDB connection established
-- [ ] API endpoints respond correctly
+- [x] Project compiles without errors
+- [x] MongoDB connection established
+- [x] API endpoints respond correctly
 - [ ] Unit tests pass (>80% coverage)
 - [ ] Code passes linter
 
@@ -121,11 +121,11 @@ Implement session management, character creation, and AI-ready architecture.
 **Milestone**: Can track game sessions within campaigns
 
 #### Week 5: Character Enhancement
-- [ ] Implement ability scores and modifiers
-- [ ] Add skills proficiency system
-- [ ] Create inventory management
-- [ ] Implement equipment tracking
-- [ ] Add character validation rules
+- [x] Implement ability scores and modifiers
+- [x] Add skills proficiency system
+- [x] Create inventory management
+- [x] Implement equipment tracking
+- [x] Add character validation rules
 
 **Milestone**: Full character sheet management
 
@@ -204,11 +204,11 @@ Week 7 Tasks:
 ```
 
 ### Success Criteria
-- [ ] Sessions can be created and tracked
-- [ ] Full character management working
-- [ ] Dice rolling working correctly
-- [ ] Basic rules engine implemented
-- [ ] Integration tests pass
+- [x] Sessions can be created and tracked
+- [x] Full character management working
+- [x] Dice rolling working correctly
+- [x] Basic rules engine implemented
+- [x] Integration tests pass
 
 ---
 
@@ -238,8 +238,8 @@ Implement DeepSeek AI integration for narrative generation and DM functionality.
 **Milestone**: AI generates compelling narratives
 
 #### Week 10: NPC System
-- [ ] Create NPC model with personality
-- [ ] Implement NPC dialogue generation
+- [x] Create NPC model with personality
+- [x] Implement NPC dialogue generation
 - [ ] Add NPC memory/relationships
 - [ ] Implement NPC state tracking
 - [ ] Create NPC appearance generation
@@ -251,7 +251,7 @@ Implement DeepSeek AI integration for narrative generation and DM functionality.
 - [ ] Create consequence tracking
 - [ ] Add plot thread management
 - [ ] Implement story arc progression
-- [ ] Add player choice tracking
+- [x] Add player choice tracking
 
 **Milestone**: Story adapts to player choices
 
@@ -260,7 +260,7 @@ Implement DeepSeek AI integration for narrative generation and DM functionality.
 - [ ] Add conversation history
 - [ ] Optimize token usage
 - [ ] Implement rate limiting for AI
-- [ ] Add AI cost tracking
+- [x] Add AI cost tracking
 
 **Milestone**: Production-ready AI DM
 
@@ -451,11 +451,11 @@ Week 16 Tasks:
 ```
 
 ### Success Criteria
-- [ ] Initiative and turns work correctly
-- [ ] All combat actions resolve properly
-- [ ] AI controls enemies intelligently
-- [ ] Combat narrated appropriately
-- [ ] Combat data persists correctly
+- [x] Initiative and turns work correctly
+- [x] All combat actions resolve properly
+- [x] AI controls enemies intelligently
+- [x] Combat narrated appropriately
+- [x] Combat data persists correctly
 
 ---
 
@@ -478,9 +478,9 @@ Improve reliability, performance, and developer experience.
 #### Week 18: Reliability
 - [ ] Comprehensive test coverage (>90%)
 - [ ] Error handling improvements
-- [ ] Retry mechanisms
+- [x] Retry mechanisms
 - [ ] Circuit breakers
-- [ ] Health checks
+- [x] Health checks
 
 **Milestone**: Production-ready reliability
 
