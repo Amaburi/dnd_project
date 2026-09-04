@@ -11,6 +11,7 @@ import (
 
 	"github.com/dnd-campaign/manager/internal/api"
 	"github.com/dnd-campaign/manager/internal/api/handlers"
+	"github.com/dnd-campaign/manager/internal/api/middleware"
 	"github.com/dnd-campaign/manager/internal/application/turn"
 	"github.com/dnd-campaign/manager/internal/domain/dice"
 	"github.com/dnd-campaign/manager/internal/domain/rules"
@@ -114,6 +115,7 @@ func main() {
 	actionHandler := handlers.NewActionHandler(turnService, campaignRepo)
 	combatHandler := handlers.NewCombatHandler(
 		encounterRepo, characterRepo, monsterRepo, sessionRepo, campaignRepo, roller)
+	diceHandler := handlers.NewDiceHandler(roller)
 
 	// Create API server
 	server := api.NewServer(api.ServerConfig{
@@ -123,7 +125,17 @@ func main() {
 		ReadTimeout:  15 * time.Second,
 		WriteTimeout: 15 * time.Second,
 		IdleTimeout:  60 * time.Second,
-	}, campaignHandler, characterHandler, monsterHandler, sessionHandler, actionHandler, combatHandler)
+		Logger:       logger,
+		CORS: middleware.CORSConfig{
+			AllowedOrigins:   cfg.CORS.AllowedOrigins,
+			AllowCredentials: cfg.CORS.AllowCredentials,
+		},
+		RateLimit: middleware.RateLimitConfig{
+			RequestsPerMinute: cfg.RateLimit.RequestsPerMinute,
+			Burst:             cfg.RateLimit.Burst,
+		},
+	}, campaignHandler, characterHandler, monsterHandler, sessionHandler, actionHandler, combatHandler,
+		diceHandler)
 
 	// Start server in goroutine
 	go func() {

@@ -7,7 +7,9 @@ import (
 	"time"
 
 	"github.com/dnd-campaign/manager/internal/api/handlers"
+	"github.com/dnd-campaign/manager/internal/api/middleware"
 	"github.com/gin-gonic/gin"
+	"github.com/rs/zerolog"
 )
 
 // ServerConfig holds server configuration
@@ -18,6 +20,13 @@ type ServerConfig struct {
 	ReadTimeout  time.Duration
 	WriteTimeout time.Duration
 	IdleTimeout  time.Duration
+
+	// Logger receives one structured line per request. The zero value is a
+	// silent logger, which is what tests want.
+	Logger zerolog.Logger
+
+	CORS      middleware.CORSConfig
+	RateLimit middleware.RateLimitConfig
 }
 
 // Server wraps the HTTP server
@@ -31,6 +40,7 @@ type Server struct {
 	sessionHandler   *handlers.SessionHandler
 	actionHandler    *handlers.ActionHandler
 	combatHandler    *handlers.CombatHandler
+	diceHandler      *handlers.DiceHandler
 }
 
 // NewServer creates a new API server
@@ -42,6 +52,7 @@ func NewServer(
 	sessionHandler *handlers.SessionHandler,
 	actionHandler *handlers.ActionHandler,
 	combatHandler *handlers.CombatHandler,
+	diceHandler *handlers.DiceHandler,
 ) *Server {
 	// Honour the configured environment instead of pinning release mode, so
 	// app.debug actually changes anything.
@@ -68,6 +79,7 @@ func NewServer(
 		sessionHandler:   sessionHandler,
 		actionHandler:    actionHandler,
 		combatHandler:    combatHandler,
+		diceHandler:      diceHandler,
 	}
 
 	srv.setupMiddleware()
@@ -76,13 +88,21 @@ func NewServer(
 	return srv
 }
 
-// setupMiddleware configures middleware
+// setupMiddleware configures middleware.
+//
+// Order matters and is deliberate: the request id comes first so everything
+// after it can log one, recovery wraps the handlers so a panic is still
+// answered in JSON, and CORS sits ahead of the rate limiter so a browser
+// preflight is answered rather than counted against the budget.
 func (s *Server) setupMiddleware() {
-	// Add recovery middleware
-	s.router.Use(gin.Recovery())
-
-	// Add logger middleware (custom)
-	s.router.Use(gin.Logger())
+	s.router.Use(
+		middleware.RequestID(),
+		middleware.Logger(s.config.Logger),
+		middleware.Recovery(s.config.Logger),
+		middleware.ErrorHandler(s.config.Logger),
+		middleware.CORS(s.config.CORS),
+		middleware.RateLimit(s.config.RateLimit),
+	)
 }
 
 // setupRoutes configures API routes
@@ -150,6 +170,16 @@ func (s *Server) setupRoutes() {
 		v1.POST("/campaigns/:id/encounters/:encounter_id/initiative", s.combatHandler.RollInitiative)
 		v1.POST("/campaigns/:id/encounters/:encounter_id/next-turn", s.combatHandler.NextTurn)
 		v1.POST("/campaigns/:id/encounters/:encounter_id/end", s.combatHandler.EndEncounter)
+
+		// Dice. Not campaign-scoped: a roll is not campaign state, and making
+		// the client name a campaign to roll a d20 would be ceremony for
+		// nothing. The probability routes roll nothing at all.
+		v1.POST("/dice/roll", s.diceHandler.Roll)
+		v1.POST("/dice/d20", s.diceHandler.RollD20)
+		v1.POST("/dice/damage", s.diceHandler.RollDamage)
+		v1.GET("/dice/probability", s.diceHandler.Probability)
+		v1.POST("/dice/probability/check", s.diceHandler.CheckProbability)
+		v1.POST("/dice/probability/attack", s.diceHandler.AttackProbability)
 	}
 }
 

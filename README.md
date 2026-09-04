@@ -11,6 +11,8 @@ OpenAI-compatible AI provider (Groq by default).
 - 👥 **Character Management**: Full character sheet support
 - 📖 **Story Tracking**: Campaign narrative and session history
 - 💾 **MongoDB Storage**: Persistent campaign data
+- 📊 **Dice probability**: exact odds and expected damage for encounter balance
+- 🛡️ **Production middleware**: request IDs, JSON errors, panic recovery, CORS, per-client rate limiting
 
 ## Quick Start
 
@@ -61,7 +63,7 @@ dnd-project/
 │   └── server/
 │       └── main.go              # Application entry point
 ├── internal/
-│   ├── api/                     # HTTP API layer
+│   ├── api/                     # HTTP API layer (handlers + middleware)
 │   ├── application/             # Business logic
 │   ├── domain/                  # Core domain models
 │   └── infrastructure/         # External integrations
@@ -71,6 +73,34 @@ dnd-project/
 ├── test/                        # Tests
 ├── go.mod
 └── Makefile
+```
+
+## Browser clients (CORS)
+
+The API refuses nothing, but it only sends `Access-Control-Allow-Origin` to origins you
+list. Add your UI's origin to `configs/config.yaml`:
+
+```yaml
+cors:
+  allowed_origins:
+    - "http://localhost:5173"   # Vite
+    - "http://localhost:3000"   # Next.js / CRA
+  allow_credentials: false      # true only if you send cookies
+```
+
+Leave the list empty to disable CORS entirely. `["*"]` reflects whatever asks — fine
+locally, wrong in production.
+
+Every response carries an `X-Request-ID`; send your own to have it echoed back, which
+makes a browser network log line and a server log line the same incident.
+
+Requests are rate limited per client address. Over budget is `429` with a `Retry-After`
+header saying how many seconds to wait:
+
+```yaml
+rate_limit:
+  requests_per_minute: 60   # 0 disables
+  burst: 10
 ```
 
 ## API Endpoints
@@ -129,6 +159,34 @@ dnd-project/
 - `POST /api/v1/campaigns/:id/sessions/:session_id/events` - Append an event
 - `GET /api/v1/campaigns/:id/sessions/:session_id/events` - Session log (`?type=` filter)
 - `GET /api/v1/campaigns/:id/events/recent` - Recent events plus a rendered context block (`?limit=`)
+
+### Dice
+
+Not campaign-scoped — a roll is not campaign state. Rolls that matter to the story are
+recorded by the action and combat endpoints instead.
+
+- `POST /api/v1/dice/roll` - Roll any expression: `{"expression": "2d6+3"}`
+- `POST /api/v1/dice/d20` - Roll a d20: `{"modifier": 5, "mode": "advantage", "dc": 15}`
+  (`mode` and `dc` are optional; with a `dc` the response also carries the outcome and the odds)
+- `POST /api/v1/dice/damage` - Roll damage: `{"expression": "1d8+3", "critical": true}`
+  (a critical doubles the dice, never the modifier)
+
+Every roll returns each individual die, not just the total: a log showing only a 7 hides
+that the player rolled 19 and 7 at disadvantage, which was most of what made the moment.
+
+### Dice probability
+
+These roll nothing. The answers are exact, computed by convolution rather than sampled.
+
+- `GET /api/v1/dice/probability?expression=2d6%2B3&target=10` - the full distribution,
+  every total with its `probability`, `at_least` and `at_most`
+- `POST /api/v1/dice/probability/check` - `{"dc": 15, "modifier": 5, "mode": "advantage"}`
+  → chance of passing, and the lowest die face that does
+- `POST /api/v1/dice/probability/attack` - `{"target_ac": 16, "modifier": 7, "damage": "1d8+4", "crit_range": 19}`
+  → hit, crit, fumble and **expected damage per attack**, which is the number behind
+  "how long does this fight last"
+
+`crit_range` defaults to 20; pass 19 or 18 for a Champion.
 
 ### Health Check
 - `GET /health` - API health status

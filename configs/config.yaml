@@ -50,13 +50,22 @@ ai:
     prompt_usd_per_million: 0.59
     completion_usd_per_million: 0.79
 
+# CORS. List the origins your UI is served from; leave empty for no browser
+# client. "*" reflects whatever asks, which is convenient locally and wrong in
+# production.
+cors:
+  allowed_origins:
+    - "http://localhost:3000"
+    - "http://localhost:5173"
+  allow_credentials: false
+
 # Logging Configuration
 logging:
   level: "debug"
   format: "json"
   output: "stdout"
 
-# Rate Limiting
+# Rate limiting, per client address. Set requests_per_minute to 0 to disable.
 rate_limit:
   requests_per_minute: 60
   burst: 10

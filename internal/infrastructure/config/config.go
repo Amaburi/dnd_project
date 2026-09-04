@@ -14,6 +14,7 @@ type Config struct {
 	App       AppConfig       `mapstructure:"app"`
 	MongoDB   MongoDBConfig   `mapstructure:"mongodb"`
 	AI        AIConfig        `mapstructure:"ai"`
+	CORS      CORSConfig      `mapstructure:"cors"`
 	Logging   LoggingConfig   `mapstructure:"logging"`
 	RateLimit RateLimitConfig `mapstructure:"rate_limit"`
 }
@@ -60,6 +61,16 @@ type AIConfig struct {
 type PricingConfig struct {
 	PromptUSDPerMillion     float64 `mapstructure:"prompt_usd_per_million"`
 	CompletionUSDPerMillion float64 `mapstructure:"completion_usd_per_million"`
+}
+
+// CORSConfig lists the browser origins allowed to call the API.
+//
+// Empty means no browser client, which is the safe default: a server that
+// answers every origin is one a malicious page can drive with the user's
+// credentials.
+type CORSConfig struct {
+	AllowedOrigins   []string `mapstructure:"allowed_origins"`
+	AllowCredentials bool     `mapstructure:"allow_credentials"`
 }
 
 // LoggingConfig holds logging settings

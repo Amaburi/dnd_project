@@ -106,7 +106,9 @@ URI resolution lives in `mongodb.buildConnectionURI`, which passes any `mongodb:
 cmd/server/main.go            composition root — all wiring lives here
 internal/api/server.go        Gin engine, route table, graceful shutdown
 internal/api/handlers/        HTTP handlers
-internal/domain/dice/         the only source of randomness — seedable for tests
+internal/api/middleware/      request id, logging, recovery, errors, CORS, rate limit
+internal/domain/dice/         the only source of randomness — seedable for tests; also
+                              probability.go, which is exact maths and rolls nothing
 internal/domain/rules/        authoritative resolution; returns facts, not prose
 internal/domain/models/       entities (Character, Campaign, Session, Monster) plus the
                               typed 5e vocabulary (abilities, skills, conditions, items,
@@ -114,7 +116,7 @@ internal/domain/models/       entities (Character, Campaign, Session, Monster) p
 internal/infrastructure/
   config/                     Viper loader
   database/mongodb/           client, collections, indexes, repositories
-  ai/                         DeepSeek client, prompt templates, service
+  ai/                         OpenAI-compatible client, prompt templates, service
 examples/ai_usage.go          runnable AI demo (package main, separate binary)
 ```
 
@@ -126,6 +128,46 @@ new type. If you add a service layer, do it deliberately and convert all handler
 
 Dependencies are constructed in `main.go` and passed to `api.NewServer`. Adding a handler
 means touching `NewServer`'s signature and the `Server` struct — there is no registry.
+
+## HTTP middleware
+
+`internal/api/middleware` is the whole chain; `server.setupMiddleware` installs it and
+nothing else. Gin's own `gin.Logger()` and `gin.Recovery()` are deliberately *not* used —
+they write plain text to stdout and answer a panic with an empty body, neither of which a
+JSON API or a browser client can work with.
+
+**Order is load-bearing** and the comment in `setupMiddleware` says why:
+
+```
+RequestID → Logger → Recovery → ErrorHandler → CORS → RateLimit → handlers
+```
+
+- `RequestID` first, so everything downstream has one to log. It reuses an inbound
+  `X-Request-ID` when the caller supplies one (so a UI can correlate) and always echoes
+  the value back on the response. Read it with `middleware.RequestIDFrom(c)`.
+- `Recovery` answers a panic with `500` JSON carrying the request id. It logs the stack
+  and **never sends it** — a stack trace in a response body is an information leak.
+- `ErrorHandler` turns a handler that called `c.Error(err)` and then wrote nothing into a
+  `500` JSON body. If the handler already wrote a response it leaves it alone; this is a
+  safety net, not a replacement for a handler answering properly itself
+  (`handlers.respondRepoError` for repository errors, `badRequest` for bad input).
+- `CORS` before `RateLimit`, so a browser preflight is answered rather than spending a
+  token. It echoes the requesting origin rather than `*` (required once credentials are
+  in play), sets `Vary: Origin`, and answers `OPTIONS` with `204`. A disallowed origin is
+  still *served* — it simply gets no `Access-Control-Allow-Origin` header, because the
+  browser is what enforces CORS, not the server. Empty `allowed_origins` disables it.
+- `RateLimit` is a hand-rolled token bucket keyed on `c.ClientIP()` — no new dependency.
+  `requests_per_minute: 0` disables it; `burst` defaults to a quarter of the rate.
+  A refusal is `429` with a `Retry-After` computed from when a token will actually exist,
+  not a guess. Idle buckets are swept after ten minutes so a long-lived process does not
+  accumulate one entry per address ever seen.
+
+The limiter is tested through `rateLimitWithClock`, an unexported constructor taking a
+`now func() time.Time`. **Do not test it against wall time** — that is how you get a suite
+that fails on a slow machine.
+
+`rate_limit.ai_requests_per_hour` exists in config but is not wired to anything yet. It
+belongs on the AI client (a budget on provider calls), not in HTTP middleware.
 
 ## Domain conventions
 
@@ -375,6 +417,20 @@ inputs — that split is what lets the rules be tested exactly rather than stati
 `RollDamage(expr, critical)` doubles the dice and adds the modifier once — the most
 commonly misplayed part of a critical. `DeathSave` encodes nat 20 = regain 1 HP and
 nat 1 = two failures.
+
+**Probability is exact, never sampled** (`probability.go`). `Distribute` convolves one die
+at a time to give every total's chance, plus `AtLeast` / `AtMost` — a Monte Carlo estimate
+of 3d6 would be wrong in the fourth decimal for no reason. It refuses anything past
+`MaxDistributionWork` (5000 dice-faces) rather than hanging a request; the mean and standard
+deviation stay available in closed form regardless. `TestDistributionMatchesBruteForce`
+checks the convolution against full enumeration, because that code is clever enough to be
+wrong quietly.
+
+`faceProbabilities` is the one table both `OddsOfCheck` and `OddsOfAttackWithMode` read, so
+the two can never disagree about the same d20. Advantage is not a bonus to the total — it
+reshapes which face survives: `P(max=f) = (2f-1)/400`, `P(min=f) = (41-2f)/400`. Attack odds
+apply the two rules checks do not (a natural 1 always misses, the crit range always hits)
+and report `ExpectedDamage`, which is the number encounter balance actually asks for.
 
 **`internal/domain/rules` is authoritative.** `Engine.SkillCheck`, `AbilityCheck`,
 `SavingThrow`, `WeaponAttack` and `MonsterAttack` decide what happened; the attack methods

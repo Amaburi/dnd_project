@@ -86,6 +86,7 @@ func newHarness(t *testing.T, replies ...string) *harness {
 		handlers.NewSessionHandler(sessions, events, campaigns),
 		handlers.NewActionHandler(turns, campaigns),
 		handlers.NewCombatHandler(encounters, characters, monsters, sessions, campaigns, roller),
+		handlers.NewDiceHandler(roller),
 	)
 
 	return &harness{server: server, stub: stub}

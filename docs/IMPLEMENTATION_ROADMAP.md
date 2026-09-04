@@ -50,7 +50,7 @@ Establish project infrastructure, basic MongoDB integration, and core API endpoi
 - [x] Implement Campaign CRUD endpoints
 - [x] Implement Character CRUD endpoints
 - [x] Add request validation
-- [ ] Create error handling middleware
+- [x] Create error handling middleware  (`internal/api/middleware`: request id, structured logging, panic recovery, error handler, CORS, per-client rate limit)
 - [x] Write integration tests for API
 
 **Milestone**: REST API fully functional for campaigns and characters
@@ -132,9 +132,9 @@ Implement session management, character creation, and AI-ready architecture.
 #### Week 6: Dice System
 - [x] Implement dice expression parser
 - [x] Create dice roller with advantage/disadvantage
-- [ ] Add probability calculations
+- [x] Add probability calculations  (`internal/domain/dice/probability.go`: exact distributions by convolution, d20 check odds, attack odds with expected damage)
 - [x] Implement dice history tracking
-- [ ] Create dice API endpoints
+- [x] Create dice API endpoints  (`/api/v1/dice/*` -- roll, d20, damage, and three probability routes)
 
 **Milestone**: Fully functional dice rolling system
 
@@ -259,7 +259,7 @@ Implement DeepSeek AI integration for narrative generation and DM functionality.
 - [ ] Implement context management
 - [ ] Add conversation history
 - [ ] Optimize token usage
-- [ ] Implement rate limiting for AI
+- [ ] Implement rate limiting for AI  (HTTP-level limiting is done in `middleware.RateLimit`; the per-hour *provider* budget in `rate_limit.ai_requests_per_hour` is still unwired)
 - [x] Add AI cost tracking
 
 **Milestone**: Production-ready AI DM
