@@ -59,6 +59,19 @@ cors:
     - "http://localhost:5173"
   allow_credentials: false
 
+# How much campaign history reaches a prompt.
+#
+# The event log grows without limit and a context window does not, so older
+# events are folded into a rolling summary and only the recent ones are sent
+# verbatim. Token counts are estimates -- deliberately generous, since an
+# under-count gets the request refused.
+memory:
+  max_tokens: 1200      # ceiling for the history block; 0 removes it
+  min_recent: 3         # newest events that survive any budget
+  window: 60            # most events ever read for one prompt
+  compact_after: 40     # un-summarised events that trigger a compaction
+  retain: 15            # events left verbatim after one
+
 # Logging Configuration
 logging:
   level: "debug"

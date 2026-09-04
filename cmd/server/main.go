@@ -12,6 +12,7 @@ import (
 	"github.com/dnd-campaign/manager/internal/api"
 	"github.com/dnd-campaign/manager/internal/api/handlers"
 	"github.com/dnd-campaign/manager/internal/api/middleware"
+	"github.com/dnd-campaign/manager/internal/application/memory"
 	"github.com/dnd-campaign/manager/internal/application/turn"
 	"github.com/dnd-campaign/manager/internal/domain/dice"
 	"github.com/dnd-campaign/manager/internal/domain/rules"
@@ -104,6 +105,21 @@ func main() {
 		characterRepo, monsterRepo, sessionRepo, eventRepo,
 		aiService, rules.NewEngine(roller),
 	)
+
+	// The campaign's memory. NewService already gave the turn a budgeted view
+	// of recent events; this replaces it with one that also carries the rolling
+	// summary, so a campaign does not forget its first session once the log
+	// outgrows a context window.
+	campaignMemory := memory.New(eventRepo, campaignRepo, aiService)
+	campaignMemory.Budget = memory.Budget{
+		MaxTokens: cfg.Memory.MaxTokens,
+		MinRecent: cfg.Memory.MinRecent,
+	}
+	campaignMemory.Window = cfg.Memory.Window
+	campaignMemory.CompactAfter = cfg.Memory.CompactAfter
+	campaignMemory.Retain = cfg.Memory.Retain
+	turnService.Memory = campaignMemory
+	turnService.Compactor = campaignMemory
 
 	// Initialize handlers. Each needs the other's repository: campaigns cascade
 	// their characters on delete, characters resolve their campaign by _id.

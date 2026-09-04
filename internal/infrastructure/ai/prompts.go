@@ -196,6 +196,31 @@ Recently: {{recently}}`,
 		// -------------------------------------------------------------------
 		// Scene and story. No mechanics at all.
 		// -------------------------------------------------------------------
+		// history_summary compresses old events so a long campaign still fits a
+		// context window. It is the only template whose output becomes input to
+		// itself, which is exactly why it must not be allowed to embellish: an
+		// invented detail would be re-summarised as fact on every later pass.
+		"history_summary": {
+			System: `You compress the record of a Dungeons & Dragons campaign so it still fits in a limited context.
+
+You are an archivist, not a storyteller. The rules are absolute:
+- Never invent an event, name, place, outcome or motive that is not in the material you were given.
+- Do not continue the story, speculate about what happens next, or offer an opinion.
+- Keep proper nouns exactly as written: characters, NPCs, places, items, factions.
+- Keep unresolved threads, debts, promises, injuries and enmities. These are what a later scene has to stay consistent with.
+- Drop dice results, individual attacks, and scene-setting prose. Keep what changed.
+- Write plain past-tense prose, no headings and no bullet points.
+
+Reply with the summary and nothing else, in at most {{word_limit}} words.`,
+			User: `Summary of everything before this point:
+{{previous_summary}}
+
+Events to fold in, oldest first:
+{{events}}
+
+Produce one summary covering both, in order.`,
+		},
+
 		"dm_base": {
 			System: `You are the narrator of a D&D 5th Edition game.
 
@@ -443,7 +468,10 @@ func (pb *PromptBuilder) BuildConversation(templateName string, variables map[st
 // Temperature settings for different tasks
 var TemperatureSettings = map[string]float64{
 	// Parsing must be repeatable, so it is the one task run at zero.
-	"intent_extraction":     0.0,
+	"intent_extraction": 0.0,
+	// Compression runs cool: a creative recap is a wrong one, and this one
+	// feeds itself, so drift compounds.
+	"history_summary":       0.2,
 	"action_narration":      0.7,
 	"check_narration":       0.6,
 	"combat_resolution":     0.3, // Consistent, predictable

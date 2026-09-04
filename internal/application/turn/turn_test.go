@@ -2,9 +2,13 @@ package turn
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/dnd-campaign/manager/internal/application/memory"
 	"github.com/dnd-campaign/manager/internal/domain/dice"
 	"github.com/dnd-campaign/manager/internal/domain/models"
 	"github.com/dnd-campaign/manager/internal/domain/rules"
@@ -54,6 +58,16 @@ func (f *fakeEvents) AppendEvent(_ context.Context, event *models.StoryEvent) er
 
 func (f *fakeEvents) GetRecentEvents(context.Context, string, int) ([]*models.StoryEvent, error) {
 	return f.history, nil
+}
+
+func (f *fakeEvents) GetEventsSince(_ context.Context, _ string, since time.Time, _ int) ([]*models.StoryEvent, error) {
+	var out []*models.StoryEvent
+	for _, e := range f.history {
+		if e.Timestamp.After(since) {
+			out = append(out, e)
+		}
+	}
+	return out, nil
 }
 
 // --- fixtures ---------------------------------------------------------------
@@ -430,5 +444,138 @@ func TestTurnIsReproducible(t *testing.T) {
 
 	if run() != run() {
 		t.Error("the same seed produced a different turn")
+	}
+}
+
+// The history a turn sends is budgeted now, not an unbounded dump of the log.
+// Without this, a long campaign eventually sends a request the provider
+// refuses -- and it refuses the whole turn, not just the history.
+func TestTurnBudgetsTheHistoryItSends(t *testing.T) {
+	h := newHarness(t, `{"action":"narrative","confidence":"high"}`, "You look around.")
+	for i := 1; i <= 60; i++ {
+		h.events.history = append(h.events.history, &models.StoryEvent{
+			SequenceNumber: i,
+			Narrative: models.NarrativeInfo{
+				AIGeneratedText: fmt.Sprintf("event %d: the party walked onward through a long and rainy stretch of moor", i),
+			},
+		})
+	}
+
+	budgeted := memory.New(h.events, nil, nil)
+	budgeted.Budget = memory.Budget{MaxTokens: 120, MinRecent: 2}
+	h.service.Memory = budgeted
+
+	if _, err := h.service.TakeAction(context.Background(), request("I look around")); err != nil {
+		t.Fatalf("TakeAction: %v", err)
+	}
+
+	prompt := h.stub.LastPrompt()
+	if strings.Contains(prompt, "event 1:") {
+		t.Error("the oldest event survived a budget that should have cut it")
+	}
+	if !strings.Contains(prompt, "event 60:") {
+		t.Error("the newest event was cut, which is the one thing the budget must never do")
+	}
+	if !strings.Contains(prompt, "earlier events are omitted") {
+		t.Error("the elided history was not disclosed, so the DM reads it as the whole campaign")
+	}
+}
+
+// A campaign with a rolling summary must send it: that is the only thing that
+// remembers session one once session ten is under way.
+func TestTurnSendsTheRollingSummary(t *testing.T) {
+	h := newHarness(t, `{"action":"narrative","confidence":"high"}`, "You look around.")
+	h.service.Memory = staticMemory{summary: "Act one: the party cleared the goblin cave and freed Sildar."}
+
+	if _, err := h.service.TakeAction(context.Background(), request("I look around")); err != nil {
+		t.Fatalf("TakeAction: %v", err)
+	}
+	if !strings.Contains(h.stub.LastPrompt(), "freed Sildar") {
+		t.Errorf("the rolling summary never reached the prompt:\n%s", h.stub.LastPrompt())
+	}
+}
+
+type staticMemory struct{ summary string }
+
+func (s staticMemory) Build(context.Context, string) (memory.Context, error) {
+	return memory.Assemble(s.summary, nil, memory.Budget{}), nil
+}
+
+type fakeCompactor struct {
+	calls int
+	err   error
+}
+
+func (f *fakeCompactor) Compact(context.Context, string) (bool, error) {
+	f.calls++
+	return f.err == nil, f.err
+}
+
+// Compaction is self-regulating: it runs when the budget actually starts
+// cutting history, and not before. A fixed "every N turns" would either
+// summarise nothing or pay for a provider call the campaign did not need.
+func TestCompactionRunsOnlyWhenHistoryIsBeingDropped(t *testing.T) {
+	short := newHarness(t, `{"action":"narrative","confidence":"high"}`, "You look around.")
+	short.events.history = []*models.StoryEvent{
+		{SequenceNumber: 1, Narrative: models.NarrativeInfo{AIGeneratedText: "The party entered the inn."}},
+	}
+	quiet := &fakeCompactor{}
+	short.service.Compactor = quiet
+
+	if _, err := short.service.TakeAction(context.Background(), request("I look around")); err != nil {
+		t.Fatalf("TakeAction: %v", err)
+	}
+	if quiet.calls != 0 {
+		t.Errorf("compacted %d times with one event of history, want none", quiet.calls)
+	}
+
+	long := newHarness(t, `{"action":"narrative","confidence":"high"}`, "You look around.")
+	for i := 1; i <= 60; i++ {
+		long.events.history = append(long.events.history, &models.StoryEvent{
+			SequenceNumber: i,
+			Narrative: models.NarrativeInfo{
+				AIGeneratedText: fmt.Sprintf("event %d: the party walked onward through a long and rainy stretch of moor", i),
+			},
+		})
+	}
+	budgeted := memory.New(long.events, nil, nil)
+	budgeted.Budget = memory.Budget{MaxTokens: 120, MinRecent: 2}
+	long.service.Memory = budgeted
+	busy := &fakeCompactor{}
+	long.service.Compactor = busy
+
+	if _, err := long.service.TakeAction(context.Background(), request("I look around")); err != nil {
+		t.Fatalf("TakeAction: %v", err)
+	}
+	if busy.calls != 1 {
+		t.Errorf("compacted %d times while dropping history, want once", busy.calls)
+	}
+}
+
+// A failed compaction must not cost the player their turn: the action already
+// resolved and was logged, and losing that to a provider hiccup would be worse
+// than a slightly oversized prompt next time.
+func TestAFailedCompactionDoesNotFailTheTurn(t *testing.T) {
+	h := newHarness(t, `{"action":"narrative","confidence":"high"}`, "You look around.")
+	for i := 1; i <= 60; i++ {
+		h.events.history = append(h.events.history, &models.StoryEvent{
+			SequenceNumber: i,
+			Narrative:      models.NarrativeInfo{AIGeneratedText: fmt.Sprintf("event %d: a long and rainy stretch of moor was crossed", i)},
+		})
+	}
+	budgeted := memory.New(h.events, nil, nil)
+	budgeted.Budget = memory.Budget{MaxTokens: 120, MinRecent: 2}
+	h.service.Memory = budgeted
+	h.service.Compactor = &fakeCompactor{err: errors.New("provider is down")}
+
+	result, err := h.service.TakeAction(context.Background(), request("I look around"))
+	if err != nil {
+		t.Fatalf("a compaction failure failed the whole turn: %v", err)
+	}
+	if result.Narration == "" {
+		t.Error("the turn produced no narration")
+	}
+	if len(h.events.appended) != 1 {
+		t.Errorf("appended %d events, want the turn's one", len(h.events.appended))
 	}
 }

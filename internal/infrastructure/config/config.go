@@ -17,6 +17,7 @@ type Config struct {
 	CORS      CORSConfig      `mapstructure:"cors"`
 	Logging   LoggingConfig   `mapstructure:"logging"`
 	RateLimit RateLimitConfig `mapstructure:"rate_limit"`
+	Memory    MemoryConfig    `mapstructure:"memory"`
 }
 
 // AppConfig holds application settings
@@ -61,6 +62,27 @@ type AIConfig struct {
 type PricingConfig struct {
 	PromptUSDPerMillion     float64 `mapstructure:"prompt_usd_per_million"`
 	CompletionUSDPerMillion float64 `mapstructure:"completion_usd_per_million"`
+}
+
+// MemoryConfig caps how much campaign history reaches a prompt.
+//
+// It is configuration rather than a constant because the right budget depends
+// on the model behind ai.base_url, and those change more often than this code
+// does. Token counts here are estimates, not the provider's own tally.
+type MemoryConfig struct {
+	// MaxTokens is the ceiling for the history block. 0 removes the ceiling.
+	MaxTokens int `mapstructure:"max_tokens"`
+
+	// MinRecent is how many of the newest events survive any budget.
+	MinRecent int `mapstructure:"min_recent"`
+
+	// Window is the most events ever read for one prompt.
+	Window int `mapstructure:"window"`
+
+	// CompactAfter is how many un-summarised events trigger a compaction, and
+	// Retain is how many stay verbatim after one.
+	CompactAfter int `mapstructure:"compact_after"`
+	Retain       int `mapstructure:"retain"`
 }
 
 // CORSConfig lists the browser origins allowed to call the API.
@@ -140,6 +162,12 @@ func Load() (*Config, error) {
 	v.SetDefault("rate_limit.requests_per_minute", 60)
 	v.SetDefault("rate_limit.burst", 10)
 	v.SetDefault("rate_limit.ai_requests_per_hour", 100)
+
+	v.SetDefault("memory.max_tokens", 1200)
+	v.SetDefault("memory.min_recent", 3)
+	v.SetDefault("memory.window", 60)
+	v.SetDefault("memory.compact_after", 40)
+	v.SetDefault("memory.retain", 15)
 
 	// Read config file
 	if err := v.ReadInConfig(); err != nil {

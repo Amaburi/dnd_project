@@ -162,3 +162,45 @@ func (r *CampaignRepository) UpdateCampaign(ctx context.Context, campaign *model
 	campaign.UpdatedAt = now
 	return nil
 }
+
+// UpdateSummary stores the campaign's rolling summary.
+//
+// It is its own method rather than part of UpdateCampaign because the summary
+// is written by the compaction pass, not by a user editing a campaign: folding
+// it into the PUT path would let a client with a stale body erase the campaign's
+// long memory. The subfields are set individually for the same reason the rest
+// of this file does it -- $set-ing a struct writes every omitted field as its
+// zero value.
+func (r *CampaignRepository) UpdateSummary(ctx context.Context, campaignID string, summary models.CampaignSummary) error {
+	if campaignID == "" {
+		return models.Invalid("campaign ID is required")
+	}
+	if summary.Text == "" {
+		return models.Invalid("summary text is required")
+	}
+
+	now := time.Now().UTC()
+	if summary.UpdatedAt.IsZero() {
+		summary.UpdatedAt = now
+	}
+
+	collection := r.client.Database().Collection(string(Campaigns))
+	result, err := collection.UpdateOne(
+		ctx,
+		bson.M{"campaign_id": campaignID},
+		bson.M{"$set": bson.M{
+			"summary.text":        summary.Text,
+			"summary.through":     summary.Through,
+			"summary.event_count": summary.EventCount,
+			"summary.updated_at":  summary.UpdatedAt,
+			"updated_at":          now,
+		}},
+	)
+	if err != nil {
+		return fmt.Errorf("failed to update campaign summary: %w", err)
+	}
+	if result.MatchedCount == 0 {
+		return models.NotFound("campaign")
+	}
+	return nil
+}

@@ -20,6 +20,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/dnd-campaign/manager/internal/application/memory"
 	"github.com/dnd-campaign/manager/internal/domain/models"
 	"github.com/dnd-campaign/manager/internal/domain/rules"
 	"github.com/dnd-campaign/manager/internal/infrastructure/ai"
@@ -52,6 +53,17 @@ type (
 	EventStore interface {
 		AppendEvent(ctx context.Context, event *models.StoryEvent) error
 		GetRecentEvents(ctx context.Context, campaignID string, limit int) ([]*models.StoryEvent, error)
+		GetEventsSince(ctx context.Context, campaignID string, since time.Time, limit int) ([]*models.StoryEvent, error)
+	}
+
+	// HistoryBuilder decides how much of the campaign a prompt gets to see.
+	HistoryBuilder interface {
+		Build(ctx context.Context, campaignID string) (memory.Context, error)
+	}
+
+	// Compactor folds history too old to send into a rolling summary.
+	Compactor interface {
+		Compact(ctx context.Context, campaignID string) (bool, error)
 	}
 
 	// Narrator is the subset of ai.Service a turn uses.
@@ -72,8 +84,23 @@ type Service struct {
 	narrator   Narrator
 	engine     *rules.Engine
 
-	// RecentEventLimit is how much history feeds a prompt.
-	RecentEventLimit int
+	// Memory decides how much of the campaign a prompt sees.
+	//
+	// It defaults to a budgeted view of recent events with no long-term
+	// summary, which is correct for a young campaign. main installs one wired
+	// to the campaign store and the provider, so the rolling summary is
+	// carried too. Replacing it is how a caller changes the token budget.
+	Memory HistoryBuilder
+
+	// Compactor folds old history into a rolling summary. Optional: without
+	// one, history past the budget is simply forgotten, which is the correct
+	// behaviour for a campaign with no provider wired up.
+	//
+	// It runs when the budget actually starts cutting events, not on a fixed
+	// schedule -- a campaign that fits its budget never pays for a summary it
+	// does not need, and one that does not fit compacts exactly once and then
+	// fits again.
+	Compactor Compactor
 }
 
 // NewService wires a turn service.
@@ -88,7 +115,7 @@ func NewService(
 	return &Service{
 		characters: characters, monsters: monsters, sessions: sessions,
 		events: events, narrator: narrator, engine: engine,
-		RecentEventLimit: 10,
+		Memory: memory.New(events, nil, nil),
 	}
 }
 
@@ -115,6 +142,10 @@ type Result struct {
 	Narration string             `json:"narration"`
 	Event     *models.StoryEvent `json:"event,omitempty"`
 	Session   string             `json:"session_id"`
+
+	// Warning reports something that went wrong beside the turn itself, such
+	// as a failed history compaction. The turn still happened.
+	Warning string `json:"warning,omitempty"`
 
 	// NeedsClarification is set when the sentence could not be read; nothing
 	// was resolved and nothing was logged.
@@ -158,12 +189,14 @@ func (s *Service) TakeAction(ctx context.Context, req *Request) (*Result, error)
 	}
 
 	// The history is read before the parse so the model can tell "attack it"
-	// from "attack the other one".
-	history, err := s.events.GetRecentEvents(ctx, req.CampaignID, s.RecentEventLimit)
+	// from "attack the other one". It is budgeted rather than dumped: an
+	// oversized request is refused whole, so an unbounded log would eventually
+	// cost the turn, not just the history.
+	remembered, err := s.Memory.Build(ctx, req.CampaignID)
 	if err != nil {
 		return nil, err
 	}
-	recent := models.NarrativeContext(history)
+	recent := remembered.Block()
 
 	result := &Result{Session: session.SessionID}
 
@@ -304,6 +337,16 @@ func (s *Service) TakeAction(ctx context.Context, req *Request) (*Result, error)
 		return nil, err
 	}
 	result.Event = event
+
+	// Compaction happens last and cannot fail the turn. The action has already
+	// resolved and been logged; losing that to a provider hiccup would be far
+	// worse than one oversized prompt next time.
+	if remembered.Dropped > 0 && s.Compactor != nil {
+		if _, err := s.Compactor.Compact(ctx, req.CampaignID); err != nil {
+			result.Warning = fmt.Sprintf("history could not be summarised: %v", err)
+		}
+	}
+
 	result.Elapsed = time.Since(started)
 	return result, nil
 }

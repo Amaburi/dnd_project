@@ -230,3 +230,35 @@ func (r *StoryEventRepository) DeleteEventsBySession(ctx context.Context, campai
 	}
 	return nil
 }
+
+// GetEventsSince returns events newer than a watermark, oldest first.
+//
+// This is what a rolling summary makes possible: everything the summary already
+// covers is never read, parsed or paid for again. The comparison is a strict
+// "after", so the event that set the watermark is not returned twice.
+func (r *StoryEventRepository) GetEventsSince(ctx context.Context, campaignID string, since time.Time, limit int) ([]*models.StoryEvent, error) {
+	if limit < 1 {
+		limit = DefaultRecentEvents
+	}
+	if limit > 200 {
+		limit = 200
+	}
+
+	// Sorted newest-first and then reversed, like GetRecentEvents: when more
+	// than `limit` events have accumulated the interesting ones are the latest,
+	// but a prompt reads better in the order things happened.
+	opts := options.Find().
+		SetSort(bson.D{{Key: "timestamp", Value: -1}}).
+		SetLimit(int64(limit))
+
+	filter := bson.M{"campaign_id": campaignID, "timestamp": bson.M{"$gt": since}}
+	events, err := r.findEvents(ctx, filter, opts)
+	if err != nil {
+		return nil, err
+	}
+
+	for i, j := 0, len(events)-1; i < j; i, j = i+1, j-1 {
+		events[i], events[j] = events[j], events[i]
+	}
+	return events, nil
+}

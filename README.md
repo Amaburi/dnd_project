@@ -11,6 +11,7 @@ OpenAI-compatible AI provider (Groq by default).
 - 👥 **Character Management**: Full character sheet support
 - 📖 **Story Tracking**: Campaign narrative and session history
 - 💾 **MongoDB Storage**: Persistent campaign data
+- 🧠 **Campaign memory**: budgeted history with a rolling summary, so a long campaign still fits
 - 📊 **Dice probability**: exact odds and expected damage for encounter balance
 - 🛡️ **Production middleware**: request IDs, JSON errors, panic recovery, CORS, per-client rate limiting
 

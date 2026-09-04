@@ -21,8 +21,31 @@ type Campaign struct {
 	CreatedBy        string             `json:"created_by" bson:"created_by"`
 	CurrentSessionID string             `json:"current_session_id" bson:"current_session_id"`
 	StoryProgress    StoryProgress      `json:"story_progress" bson:"story_progress"`
+	Summary          CampaignSummary    `json:"summary" bson:"summary"`
 	CreatedAt        time.Time          `json:"created_at" bson:"created_at"`
 	UpdatedAt        time.Time          `json:"updated_at" bson:"updated_at"`
+}
+
+// CampaignSummary is the rolling recap of everything too old to send verbatim.
+//
+// It exists because the event log grows without limit and a context window does
+// not. Rather than forgetting the first session the moment the tenth begins,
+// old events are folded into this and the watermark advances past them.
+type CampaignSummary struct {
+	Text string `json:"text" bson:"text"`
+
+	// Through is the timestamp of the newest event this summary covers.
+	// Everything after it is still sent verbatim.
+	//
+	// A timestamp rather than a sequence number because sequence numbers
+	// restart per session, so they cannot order a whole campaign. Two events
+	// sharing a timestamp to the nanosecond would cost one history line, which
+	// is why the watermark is compared with a strict "after".
+	Through time.Time `json:"through" bson:"through"`
+
+	// EventCount is how many events have been folded in, for reporting.
+	EventCount int       `json:"event_count" bson:"event_count"`
+	UpdatedAt  time.Time `json:"updated_at" bson:"updated_at"`
 }
 
 // DMSettings contains dungeon master preferences

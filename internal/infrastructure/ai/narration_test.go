@@ -220,6 +220,10 @@ func TestEveryTemplateHasACaller(t *testing.T) {
 			_, err := service.GenerateBackstory(ctx, &BackstoryRequest{CharacterName: "Thistle"})
 			return err
 		},
+		"history_summary": func() error {
+			_, err := service.SummarizeHistory(ctx, "", []string{"They set out."})
+			return err
+		},
 		"quest_generation": func() error {
 			_, err := service.GenerateQuest(ctx, &QuestRequest{QuestType: "rescue"})
 			return err

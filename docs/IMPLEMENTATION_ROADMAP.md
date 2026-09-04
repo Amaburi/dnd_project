@@ -256,9 +256,9 @@ Implement DeepSeek AI integration for narrative generation and DM functionality.
 **Milestone**: Story adapts to player choices
 
 #### Week 12: AI Integration Polish
-- [ ] Implement context management
-- [ ] Add conversation history
-- [ ] Optimize token usage
+- [x] Implement context management  (`internal/application/memory`: budgeted assembly, rolling summary, watermark)
+- [x] Add conversation history  (the append-only event log feeds every prompt through `memory.Build`)
+- [x] Optimize token usage  (`EstimateTokens` + `Budget`; compaction folds old events into `campaign.summary`)
 - [ ] Implement rate limiting for AI  (HTTP-level limiting is done in `middleware.RateLimit`; the per-hour *provider* budget in `rate_limit.ai_requests_per_hour` is still unwired)
 - [x] Add AI cost tracking
 
