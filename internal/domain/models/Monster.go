@@ -1,6 +1,9 @@
 package models
 
 import (
+	"fmt"
+	"strconv"
+	"strings"
 	"time"
 
 	"go.mongodb.org/mongo-driver/bson/primitive"
@@ -18,15 +21,49 @@ const (
 	SizeGargantuan CreatureSize = "gargantuan"
 )
 
+// DamageAffinities is how a creature responds to each damage type.
+//
+// The three lists live in one type so combatants and statblocks resolve
+// affinity through the same code: keeping a separate copy on each meant the
+// combat path quietly ignored resistances entirely.
+type DamageAffinities struct {
+	Vulnerabilities []DamageType `json:"vulnerabilities,omitempty" bson:"vulnerabilities,omitempty"`
+	Resistances     []DamageType `json:"resistances,omitempty" bson:"resistances,omitempty"`
+	Immunities      []DamageType `json:"immunities,omitempty" bson:"immunities,omitempty"`
+}
+
+// For reports how a damage type is treated.
+//
+// Immunity beats resistance, which beats vulnerability, so a creature listed
+// under more than one is never scaled twice.
+func (a DamageAffinities) For(dt DamageType) DamageAffinity {
+	for _, t := range a.Immunities {
+		if t == dt {
+			return AffinityImmune
+		}
+	}
+	for _, t := range a.Resistances {
+		if t == dt {
+			return AffinityResistant
+		}
+	}
+	for _, t := range a.Vulnerabilities {
+		if t == dt {
+			return AffinityVulnerable
+		}
+	}
+	return AffinityNormal
+}
+
+// IsEmpty reports whether the creature treats all damage normally.
+func (a DamageAffinities) IsEmpty() bool {
+	return len(a.Vulnerabilities) == 0 && len(a.Resistances) == 0 && len(a.Immunities) == 0
+}
+
 // Monster is a statblock for a hostile or neutral creature.
 //
-// Monsters were previously stored as Characters with Type "monster", which
-// forced a dragon through a schema built around race, class, background and
-// experience points. A statblock is a different shape: it has a challenge
-// rating rather than a level, flat save and skill bonuses rather than
-// proficiencies derived from a class, damage resistances that the character
-// sheet has no field for at all, and multiattack and legendary actions that
-// have no character equivalent.
+// Monsters are an open catalogue rather than a closed table like classes and
+// races: they are stored, not enumerated. What is fixed is the shape.
 type Monster struct {
 	ID         primitive.ObjectID `json:"id" bson:"_id,omitempty"`
 	MonsterID  string             `json:"monster_id" bson:"monster_id"`
@@ -38,10 +75,14 @@ type Monster struct {
 	Subtype   string       `json:"subtype,omitempty" bson:"subtype,omitempty"` // e.g. "goblinoid"
 	Alignment string       `json:"alignment" bson:"alignment"`
 
-	ArmorClass     int       `json:"armor_class" bson:"armor_class"`
-	ArmorNote      string    `json:"armor_note,omitempty" bson:"armor_note,omitempty"` // "natural armor", "chain shirt, shield"
-	HitPoints      HitPoints `json:"hit_points" bson:"hit_points"`
-	HitDiceFormula string    `json:"hit_dice_formula,omitempty" bson:"hit_dice_formula,omitempty"` // "18d10+36"
+	ArmorClass int       `json:"armor_class" bson:"armor_class"`
+	ArmorNote  string    `json:"armor_note,omitempty" bson:"armor_note,omitempty"` // "natural armor"
+	HitPoints  HitPoints `json:"hit_points" bson:"hit_points"`
+
+	// HitDice is the formula a statblock prints, e.g. "18d10+36". It is
+	// parsed rather than decorative: AverageHitPoints checks the printed
+	// maximum against what the dice actually average to.
+	HitDice string `json:"hit_dice,omitempty" bson:"hit_dice,omitempty"`
 
 	Speeds        Speeds        `json:"speeds" bson:"speeds"`
 	AbilityScores AbilityScores `json:"ability_scores" bson:"ability_scores"`
@@ -51,25 +92,22 @@ type Monster struct {
 	SavingThrows map[Ability]int `json:"saving_throws,omitempty" bson:"saving_throws,omitempty"`
 	Skills       map[Skill]int   `json:"skills,omitempty" bson:"skills,omitempty"`
 
-	// Damage affinities are core combat maths and had no representation at
-	// all before: halving, negating and doubling damage by type is what makes
-	// damage types mean anything.
-	DamageVulnerabilities []DamageType `json:"damage_vulnerabilities,omitempty" bson:"damage_vulnerabilities,omitempty"`
-	DamageResistances     []DamageType `json:"damage_resistances,omitempty" bson:"damage_resistances,omitempty"`
-	DamageImmunities      []DamageType `json:"damage_immunities,omitempty" bson:"damage_immunities,omitempty"`
-	ConditionImmunities   []Condition  `json:"condition_immunities,omitempty" bson:"condition_immunities,omitempty"`
+	Affinities          DamageAffinities `json:"damage_affinities" bson:"damage_affinities"`
+	ConditionImmunities []Condition      `json:"condition_immunities,omitempty" bson:"condition_immunities,omitempty"`
 
 	Senses    Senses   `json:"senses" bson:"senses"`
 	Languages []string `json:"languages,omitempty" bson:"languages,omitempty"`
 
-	ChallengeRating  float64 `json:"challenge_rating" bson:"challenge_rating"` // 0.125, 0.25, 0.5, then whole numbers
-	XP               int     `json:"xp" bson:"xp"`
-	ProficiencyBonus int     `json:"proficiency_bonus" bson:"proficiency_bonus"`
+	ChallengeRating float64 `json:"challenge_rating" bson:"challenge_rating"` // 0.125, 0.25, 0.5, then whole numbers
 
 	Traits       []MonsterFeature `json:"traits,omitempty" bson:"traits,omitempty"`
 	Actions      []MonsterAction  `json:"actions,omitempty" bson:"actions,omitempty"`
 	BonusActions []MonsterAction  `json:"bonus_actions,omitempty" bson:"bonus_actions,omitempty"`
 	Reactions    []MonsterAction  `json:"reactions,omitempty" bson:"reactions,omitempty"`
+
+	// LegendaryResistancePerDay lets a creature turn a failed save into a
+	// success that many times. Nearly every boss has it and it had no field.
+	LegendaryResistancePerDay int `json:"legendary_resistance_per_day,omitempty" bson:"legendary_resistance_per_day,omitempty"`
 
 	LegendaryActionsPerRound int             `json:"legendary_actions_per_round,omitempty" bson:"legendary_actions_per_round,omitempty"`
 	LegendaryActions         []MonsterAction `json:"legendary_actions,omitempty" bson:"legendary_actions,omitempty"`
@@ -91,19 +129,29 @@ type Speeds struct {
 	Hover  bool `json:"hover,omitempty" bson:"hover,omitempty"`
 }
 
-// Senses holds special senses in feet, plus passive Perception.
+// Senses holds special senses in feet. Passive Perception is derived rather
+// than stored, so it cannot disagree with the creature's Wisdom.
 type Senses struct {
-	Darkvision        int `json:"darkvision,omitempty" bson:"darkvision,omitempty"`
-	Blindsight        int `json:"blindsight,omitempty" bson:"blindsight,omitempty"`
-	Tremorsense       int `json:"tremorsense,omitempty" bson:"tremorsense,omitempty"`
-	Truesight         int `json:"truesight,omitempty" bson:"truesight,omitempty"`
-	PassivePerception int `json:"passive_perception" bson:"passive_perception"`
+	Darkvision  int `json:"darkvision,omitempty" bson:"darkvision,omitempty"`
+	Blindsight  int `json:"blindsight,omitempty" bson:"blindsight,omitempty"`
+	Tremorsense int `json:"tremorsense,omitempty" bson:"tremorsense,omitempty"`
+	Truesight   int `json:"truesight,omitempty" bson:"truesight,omitempty"`
 }
 
 // MonsterFeature is a passive trait, such as Pack Tactics or Regeneration.
 type MonsterFeature struct {
 	Name        string `json:"name" bson:"name"`
 	Description string `json:"description" bson:"description"`
+}
+
+// MultiattackPart is one component of a multiattack, naming another action and
+// how many times it is used.
+//
+// "One bite and two claws" refers to other entries; an attack count on its own
+// could not express which attacks.
+type MultiattackPart struct {
+	ActionName string `json:"action_name" bson:"action_name"`
+	Count      int    `json:"count" bson:"count"`
 }
 
 // MonsterAction is something a monster can do on its turn.
@@ -117,41 +165,47 @@ type MonsterAction struct {
 	DamageDice  string     `json:"damage_dice,omitempty" bson:"damage_dice,omitempty"`
 	DamageType  DamageType `json:"damage_type,omitempty" bson:"damage_type,omitempty"`
 	ReachFeet   int        `json:"reach_feet,omitempty" bson:"reach_feet,omitempty"`
-	RangeFeet   int        `json:"range_feet,omitempty" bson:"range_feet,omitempty"`
+	RangeNormal int        `json:"range_normal,omitempty" bson:"range_normal,omitempty"`
+	RangeLong   int        `json:"range_long,omitempty" bson:"range_long,omitempty"`
 
 	// SaveDC and SaveAbility describe actions the target resists instead.
 	SaveDC      int     `json:"save_dc,omitempty" bson:"save_dc,omitempty"`
 	SaveAbility Ability `json:"save_ability,omitempty" bson:"save_ability,omitempty"`
 
-	// AttacksPerAction is how many attacks this action makes, for
-	// multiattack. Zero and one both mean a single attack.
-	AttacksPerAction int `json:"attacks_per_action,omitempty" bson:"attacks_per_action,omitempty"`
+	// Multiattack names the actions this one performs and how often.
+	Multiattack []MultiattackPart `json:"multiattack,omitempty" bson:"multiattack,omitempty"`
 
 	// LegendaryCost is how many legendary actions this option consumes.
 	LegendaryCost int `json:"legendary_cost,omitempty" bson:"legendary_cost,omitempty"`
 }
 
+// IsMultiattack reports whether the action is a multiattack routine.
+func (a MonsterAction) IsMultiattack() bool { return len(a.Multiattack) > 0 }
+
+// ---------------------------------------------------------------------------
+// Derived values. Proficiency bonus, XP and passive Perception were stored
+// fields beside the tables that compute them, which is the same drift the
+// character sheet had.
+// ---------------------------------------------------------------------------
+
+// ProficiencyBonus is derived from challenge rating.
+func (m *Monster) ProficiencyBonus() int {
+	return ProficiencyBonusForCR(m.ChallengeRating)
+}
+
+// XP is the experience the monster awards, from its challenge rating.
+func (m *Monster) XP() int {
+	return ChallengeRatingXP[m.ChallengeRating]
+}
+
+// PassivePerception is 10 plus the monster's Perception bonus.
+func (m *Monster) PassivePerception() int {
+	return 10 + m.SkillModifier(SkillPerception)
+}
+
 // AffinityTo reports how the monster responds to a damage type.
-//
-// Immunity beats resistance, which beats vulnerability, so a creature listed
-// under more than one is never scaled twice.
 func (m *Monster) AffinityTo(dt DamageType) DamageAffinity {
-	for _, t := range m.DamageImmunities {
-		if t == dt {
-			return AffinityImmune
-		}
-	}
-	for _, t := range m.DamageResistances {
-		if t == dt {
-			return AffinityResistant
-		}
-	}
-	for _, t := range m.DamageVulnerabilities {
-		if t == dt {
-			return AffinityVulnerable
-		}
-	}
-	return AffinityNormal
+	return m.Affinities.For(dt)
 }
 
 // TakeDamage applies damage of a type, scaling it by affinity first, and
@@ -193,6 +247,223 @@ func (m *Monster) SkillModifier(s Skill) int {
 		return bonus
 	}
 	return m.AbilityScores.Modifier(s.Ability())
+}
+
+// Action looks an action up by name, which is how a multiattack resolves its
+// component parts.
+func (m *Monster) Action(name string) (MonsterAction, bool) {
+	for _, group := range [][]MonsterAction{m.Actions, m.BonusActions, m.Reactions, m.LegendaryActions} {
+		for _, a := range group {
+			if strings.EqualFold(a.Name, name) {
+				return a, true
+			}
+		}
+	}
+	return MonsterAction{}, false
+}
+
+// HitDiceFormula is a parsed "NdX+B" hit point expression.
+type HitDiceFormula struct {
+	Count int
+	Die   int
+	Bonus int
+}
+
+// Average is the hit points the formula averages to, which is the number a
+// statblock prints: each die contributes (die+1)/2, rounded down at the end.
+func (f HitDiceFormula) Average() int {
+	return (f.Count*(f.Die+1))/2 + f.Bonus
+}
+
+// String renders the formula the way a statblock prints it.
+func (f HitDiceFormula) String() string {
+	if f.Bonus > 0 {
+		return fmt.Sprintf("%dd%d+%d", f.Count, f.Die, f.Bonus)
+	}
+	if f.Bonus < 0 {
+		return fmt.Sprintf("%dd%d%d", f.Count, f.Die, f.Bonus)
+	}
+	return fmt.Sprintf("%dd%d", f.Count, f.Die)
+}
+
+// ParseHitDiceFormula reads "8d10+40" and its variants.
+func ParseHitDiceFormula(s string) (HitDiceFormula, error) {
+	text := strings.ReplaceAll(strings.TrimSpace(strings.ToLower(s)), " ", "")
+	if text == "" {
+		return HitDiceFormula{}, Invalid("hit dice formula is empty")
+	}
+
+	parts := strings.SplitN(text, "d", 2)
+	if len(parts) != 2 {
+		return HitDiceFormula{}, Invalid("hit dice formula %q is not of the form NdX+B", s)
+	}
+
+	count, err := strconv.Atoi(parts[0])
+	if err != nil || count < 1 {
+		return HitDiceFormula{}, Invalid("hit dice formula %q has an invalid die count", s)
+	}
+
+	rest := parts[1]
+	bonus := 0
+	if i := strings.IndexAny(rest, "+-"); i >= 0 {
+		bonus, err = strconv.Atoi(rest[i:])
+		if err != nil {
+			return HitDiceFormula{}, Invalid("hit dice formula %q has an invalid bonus", s)
+		}
+		rest = rest[:i]
+	}
+
+	die, err := strconv.Atoi(rest)
+	if err != nil || die < 1 {
+		return HitDiceFormula{}, Invalid("hit dice formula %q has an invalid die size", s)
+	}
+
+	return HitDiceFormula{Count: count, Die: die, Bonus: bonus}, nil
+}
+
+// AverageHitPoints returns the hit points the monster's dice average to, and
+// whether the formula could be read at all.
+func (m *Monster) AverageHitPoints() (int, bool) {
+	formula, err := ParseHitDiceFormula(m.HitDice)
+	if err != nil {
+		return 0, false
+	}
+	return formula.Average(), true
+}
+
+// Validate checks a statblock for internal consistency.
+//
+// The character sheet has ValidateSheet; a statblock had nothing, so one with
+// an invented damage type or no hit points saved without complaint.
+func (m *Monster) Validate() error {
+	var problems []string
+
+	if strings.TrimSpace(m.Name) == "" {
+		problems = append(problems, "name is required")
+	}
+	switch m.Size {
+	case SizeTiny, SizeSmall, SizeMedium, SizeLarge, SizeHuge, SizeGargantuan:
+	default:
+		problems = append(problems, fmt.Sprintf("unknown size %q", m.Size))
+	}
+	if m.ArmorClass < 1 {
+		problems = append(problems, fmt.Sprintf("armor class is %d, want at least 1", m.ArmorClass))
+	}
+	if m.HitPoints.Maximum < 1 {
+		problems = append(problems, "hit point maximum must be at least 1")
+	}
+	if _, ok := ChallengeRatingXP[m.ChallengeRating]; !ok {
+		problems = append(problems, fmt.Sprintf("challenge rating %v is not a recognised value", m.ChallengeRating))
+	}
+
+	for _, group := range []struct {
+		label string
+		types []DamageType
+	}{
+		{"vulnerability", m.Affinities.Vulnerabilities},
+		{"resistance", m.Affinities.Resistances},
+		{"immunity", m.Affinities.Immunities},
+	} {
+		for _, dt := range group.types {
+			if !dt.Valid() {
+				problems = append(problems, fmt.Sprintf("unknown damage %s %q", group.label, dt))
+			}
+		}
+	}
+
+	for _, c := range m.ConditionImmunities {
+		if !c.Valid() {
+			problems = append(problems, fmt.Sprintf("unknown condition immunity %q", c))
+		}
+	}
+	for a := range m.SavingThrows {
+		if !a.Valid() {
+			problems = append(problems, fmt.Sprintf("unknown saving throw ability %q", a))
+		}
+	}
+	for s := range m.Skills {
+		if !s.Valid() {
+			problems = append(problems, fmt.Sprintf("unknown skill %q", s))
+		}
+	}
+
+	for _, group := range [][]MonsterAction{m.Actions, m.BonusActions, m.Reactions, m.LegendaryActions} {
+		for _, a := range group {
+			if a.Name == "" {
+				problems = append(problems, "an action has no name")
+				continue
+			}
+			if a.DamageType != "" && !a.DamageType.Valid() {
+				problems = append(problems, fmt.Sprintf("action %q has unknown damage type %q", a.Name, a.DamageType))
+			}
+			if a.SaveAbility != "" && !a.SaveAbility.Valid() {
+				problems = append(problems, fmt.Sprintf("action %q has unknown save ability %q", a.Name, a.SaveAbility))
+			}
+			// A multiattack that names an action the monster does not have
+			// cannot be resolved.
+			for _, part := range a.Multiattack {
+				if _, ok := m.Action(part.ActionName); !ok {
+					problems = append(problems, fmt.Sprintf(
+						"multiattack %q refers to unknown action %q", a.Name, part.ActionName))
+				}
+				if part.Count < 1 {
+					problems = append(problems, fmt.Sprintf(
+						"multiattack %q uses %q %d times", a.Name, part.ActionName, part.Count))
+				}
+			}
+		}
+	}
+
+	if m.LegendaryActionsPerRound > 0 && len(m.LegendaryActions) == 0 {
+		problems = append(problems, "legendary actions are allowed but none are defined")
+	}
+
+	// The printed hit points should match what the dice average to. A
+	// mismatch is usually a typo in one or the other.
+	if m.HitDice != "" {
+		if average, ok := m.AverageHitPoints(); !ok {
+			problems = append(problems, fmt.Sprintf("hit dice %q could not be parsed", m.HitDice))
+		} else if average != m.HitPoints.Maximum {
+			problems = append(problems, fmt.Sprintf(
+				"hit point maximum is %d but %s averages %d", m.HitPoints.Maximum, m.HitDice, average))
+		}
+	}
+
+	if len(problems) > 0 {
+		return Invalid("invalid statblock: %s", strings.Join(problems, "; "))
+	}
+	return nil
+}
+
+// ToCombatant builds a combat entry from the statblock.
+//
+// Affinities and condition immunities are copied across so the combat path
+// resolves them; before this they lived only on the Monster and a fire-immune
+// creature took full fire damage in an encounter. Monsters do not make death
+// saves -- at zero hit points they simply die.
+func (m *Monster) ToCombatant(combatantID string) Combatant {
+	hp := m.HitPoints
+	if hp.Current == 0 && hp.Maximum > 0 {
+		hp.Current = hp.Maximum
+	}
+
+	return Combatant{
+		CombatantID:                  combatantID,
+		SourceType:                   SourceMonster,
+		SourceID:                     m.MonsterID,
+		Type:                         "enemy",
+		Name:                         m.Name,
+		InitiativeModifier:           m.InitiativeModifier(),
+		HitPoints:                    hp,
+		ArmorClass:                   m.ArmorClass,
+		Status:                       CombatantActive,
+		Affinities:                   m.Affinities,
+		ConditionImmunities:          append([]Condition(nil), m.ConditionImmunities...),
+		MakesDeathSaves:              false,
+		Speed:                        m.Speeds.Walk,
+		MovementRemaining:            m.Speeds.Walk,
+		LegendaryResistanceRemaining: m.LegendaryResistancePerDay,
+	}
 }
 
 // ChallengeRatingXP maps challenge rating to the experience it awards.

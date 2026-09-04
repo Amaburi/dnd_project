@@ -343,10 +343,12 @@ func TestDamageAffinityScaling(t *testing.T) {
 // more than one is never scaled twice.
 func TestMonsterDamageAffinityPrecedence(t *testing.T) {
 	m := &Monster{
-		HitPoints:             HitPoints{Current: 30, Maximum: 30},
-		DamageImmunities:      []DamageType{DamagePoison},
-		DamageResistances:     []DamageType{DamageFire, DamageSlashing},
-		DamageVulnerabilities: []DamageType{DamageFire, DamageCold},
+		HitPoints: HitPoints{Current: 30, Maximum: 30},
+		Affinities: DamageAffinities{
+			Immunities:      []DamageType{DamagePoison},
+			Resistances:     []DamageType{DamageFire, DamageSlashing},
+			Vulnerabilities: []DamageType{DamageFire, DamageCold},
+		},
 	}
 
 	if got := m.AffinityTo(DamageFire); got != AffinityResistant {
@@ -410,12 +412,13 @@ func TestConcentrationSaveDC(t *testing.T) {
 
 func TestCombatantDropsToDyingThenDies(t *testing.T) {
 	c := &Combatant{
-		HitPoints: HitPoints{Current: 6, Maximum: 20},
-		Status:    CombatantActive,
+		HitPoints:       HitPoints{Current: 6, Maximum: 20},
+		Status:          CombatantActive,
+		MakesDeathSaves: true,
 	}
 
 	// Dropping to 0 without massive damage means dying, not dead.
-	c.TakeDamage(6, false)
+	c.TakeDamage(6, DamageSlashing, false)
 	if c.Status != CombatantDying {
 		t.Fatalf("status = %s, want dying", c.Status)
 	}
@@ -425,11 +428,11 @@ func TestCombatantDropsToDyingThenDies(t *testing.T) {
 
 	// Damage taken while down is an automatic death save failure; a critical
 	// counts as two.
-	c.TakeDamage(1, false)
+	c.TakeDamage(1, DamageSlashing, false)
 	if c.DeathSaves.Failures != 1 {
 		t.Errorf("failures = %d, want 1", c.DeathSaves.Failures)
 	}
-	c.TakeDamage(1, true)
+	c.TakeDamage(1, DamageSlashing, true)
 	if c.DeathSaves.Failures != 3 {
 		t.Errorf("failures after a critical = %d, want 3", c.DeathSaves.Failures)
 	}
@@ -440,11 +443,12 @@ func TestCombatantDropsToDyingThenDies(t *testing.T) {
 
 func TestCombatantMassiveDamageSkipsDeathSaves(t *testing.T) {
 	c := &Combatant{
-		HitPoints: HitPoints{Current: 5, Maximum: 10},
-		Status:    CombatantActive,
+		HitPoints:       HitPoints{Current: 5, Maximum: 10},
+		Status:          CombatantActive,
+		MakesDeathSaves: true,
 	}
 
-	c.TakeDamage(20, false) // 15 overflow against a 10 maximum
+	c.TakeDamage(20, DamageSlashing, false) // 15 overflow against a 10 maximum
 	if c.Status != CombatantDead {
 		t.Errorf("status = %s, want dead outright from massive damage", c.Status)
 	}
@@ -480,9 +484,9 @@ func TestCombatantHealingClearsDeathSaves(t *testing.T) {
 func TestStartTurnResetsPerTurnResources(t *testing.T) {
 	c := &Combatant{
 		ActionUsed: true, BonusActionUsed: true, ReactionUsed: true,
-		MovementRemaining: 0,
+		MovementRemaining: 0, Speed: 30,
 	}
-	c.StartTurn(30)
+	c.StartTurn()
 
 	if c.ActionUsed || c.BonusActionUsed || c.ReactionUsed {
 		t.Error("action economy not reset at the start of the turn")

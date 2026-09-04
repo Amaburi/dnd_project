@@ -89,6 +89,14 @@ dnd-project/
 - `PUT /api/v1/campaigns/:id/characters/:char_id` - Update character
 - `DELETE /api/v1/campaigns/:id/characters/:char_id` - Delete character
 
+### Monsters
+- `POST /api/v1/campaigns/:id/monsters` - Create statblock
+- `GET /api/v1/campaigns/:id/monsters` - List statblocks (`?q=` name, `?min_cr=`/`?max_cr=` range)
+- `POST /api/v1/campaigns/:id/monsters/seed` - Copy the SRD catalogue into the campaign
+- `GET /api/v1/campaigns/:id/monsters/:monster_id` - Get statblock
+- `PUT /api/v1/campaigns/:id/monsters/:monster_id` - Update statblock
+- `DELETE /api/v1/campaigns/:id/monsters/:monster_id` - Delete statblock
+
 ### Health Check
 - `GET /health` - API health status
 

@@ -187,6 +187,21 @@ type Combatant struct {
 	Conditions []Condition     `json:"conditions" bson:"conditions"`
 	Exhaustion int             `json:"exhaustion,omitempty" bson:"exhaustion,omitempty"`
 
+	// Affinities and ConditionImmunities are copied from the statblock or
+	// sheet when the encounter starts, so damage resolution never has to
+	// reach back to the source document mid-combat.
+	Affinities          DamageAffinities `json:"damage_affinities" bson:"damage_affinities"`
+	ConditionImmunities []Condition      `json:"condition_immunities,omitempty" bson:"condition_immunities,omitempty"`
+
+	// MakesDeathSaves separates player characters, who fall unconscious and
+	// roll to stabilise, from monsters, which die at zero hit points.
+	MakesDeathSaves bool `json:"makes_death_saves" bson:"makes_death_saves"`
+
+	// LegendaryResistanceRemaining counts uses left today.
+	LegendaryResistanceRemaining int `json:"legendary_resistance_remaining,omitempty" bson:"legendary_resistance_remaining,omitempty"`
+
+	Speed int `json:"speed" bson:"speed"`
+
 	// Action and bonus action are once per turn, so they are flags rather
 	// than counters. A reaction is once per round and refreshes at the start
 	// of the creature's turn.
@@ -200,11 +215,45 @@ type Combatant struct {
 }
 
 // StartTurn resets the per-turn resources at the start of a combatant's turn.
-func (c *Combatant) StartTurn(speed int) {
+func (c *Combatant) StartTurn() {
 	c.ActionUsed = false
 	c.BonusActionUsed = false
 	c.ReactionUsed = false
-	c.MovementRemaining = speed
+	c.MovementRemaining = c.Speed
+}
+
+// AffinityTo reports how this combatant treats a damage type.
+func (c *Combatant) AffinityTo(dt DamageType) DamageAffinity {
+	return c.Affinities.For(dt)
+}
+
+// ImmuneToCondition reports whether a condition cannot affect this combatant.
+func (c *Combatant) ImmuneToCondition(cond Condition) bool {
+	for _, immune := range c.ConditionImmunities {
+		if immune == cond {
+			return true
+		}
+	}
+	return false
+}
+
+// AddCondition applies a condition unless the combatant is immune to it.
+func (c *Combatant) AddCondition(cond Condition) bool {
+	if c.ImmuneToCondition(cond) || c.HasCondition(cond) {
+		return false
+	}
+	c.Conditions = append(c.Conditions, cond)
+	return true
+}
+
+// UseLegendaryResistance turns a failed save into a success, if any uses
+// remain.
+func (c *Combatant) UseLegendaryResistance() bool {
+	if c.LegendaryResistanceRemaining < 1 {
+		return false
+	}
+	c.LegendaryResistanceRemaining--
+	return true
 }
 
 // HasCondition reports whether a condition is currently applied.
@@ -217,22 +266,34 @@ func (c *Combatant) HasCondition(cond Condition) bool {
 	return false
 }
 
-// TakeDamage applies damage and updates the combatant's status.
+// TakeDamage applies damage of a type and updates the combatant's status.
 //
-// This encodes the 5e rules around dropping to 0: leftover damage of at least
-// the hit point maximum kills outright, damage taken while already down adds
-// a death save failure (two on a critical), and any damage breaks the
-// stabilised state.
-func (c *Combatant) TakeDamage(amount int, critical bool) {
+// The damage type is what makes resistance and immunity mean anything: this
+// used to take a bare amount, so a fire-immune creature took full fire damage
+// in every actual encounter. It returns the damage dealt after scaling.
+//
+// The rest encodes 5e's rules around dropping to 0: leftover damage of at
+// least the hit point maximum kills outright, damage taken while already down
+// adds a death save failure (two on a critical), and anything that does not
+// make death saves simply dies.
+func (c *Combatant) TakeDamage(amount int, dt DamageType, critical bool) int {
 	if c.Status == CombatantDead {
-		return
+		return 0
+	}
+
+	dealt := c.AffinityTo(dt).Apply(amount)
+	if dealt <= 0 {
+		return 0
 	}
 
 	alreadyDown := c.HitPoints.Current == 0
-	overflow := c.HitPoints.ApplyDamage(amount)
+	overflow := c.HitPoints.ApplyDamage(dealt)
 
 	switch {
 	case c.HitPoints.IsMassiveDamage(overflow):
+		c.Status = CombatantDead
+	case !c.MakesDeathSaves && c.HitPoints.Current == 0:
+		// Monsters do not linger at zero hit points.
 		c.Status = CombatantDead
 	case alreadyDown:
 		c.DeathSaves.Failures++
@@ -248,6 +309,8 @@ func (c *Combatant) TakeDamage(amount int, critical bool) {
 		c.Status = CombatantDying
 		c.DeathSaves.Reset()
 	}
+
+	return dealt
 }
 
 // Heal restores hit points, bringing a downed combatant back to consciousness

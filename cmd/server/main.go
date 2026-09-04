@@ -65,11 +65,13 @@ func main() {
 	// Initialize repositories
 	campaignRepo := mongodb.NewCampaignRepository(mongoClient)
 	characterRepo := mongodb.NewCharacterRepository(mongoClient)
+	monsterRepo := mongodb.NewMonsterRepository(mongoClient)
 
 	// Initialize handlers. Each needs the other's repository: campaigns cascade
 	// their characters on delete, characters resolve their campaign by _id.
-	campaignHandler := handlers.NewCampaignHandler(campaignRepo, characterRepo)
+	campaignHandler := handlers.NewCampaignHandler(campaignRepo, characterRepo, monsterRepo)
 	characterHandler := handlers.NewCharacterHandler(characterRepo, campaignRepo)
+	monsterHandler := handlers.NewMonsterHandler(monsterRepo, campaignRepo)
 
 	// Create API server
 	server := api.NewServer(api.ServerConfig{
@@ -79,7 +81,7 @@ func main() {
 		ReadTimeout:  15 * time.Second,
 		WriteTimeout: 15 * time.Second,
 		IdleTimeout:  60 * time.Second,
-	}, campaignHandler, characterHandler)
+	}, campaignHandler, characterHandler, monsterHandler)
 
 	// Start server in goroutine
 	go func() {

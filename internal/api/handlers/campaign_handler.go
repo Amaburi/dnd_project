@@ -12,16 +12,22 @@ import (
 // CampaignHandler handles campaign HTTP requests
 type CampaignHandler struct {
 	campaignRepo *mongodb.CampaignRepository
-	// characterRepo is needed so deleting a campaign can take its characters
-	// with it instead of orphaning them.
+	// characterRepo and monsterRepo are needed so deleting a campaign takes
+	// its children with it instead of orphaning them.
 	characterRepo *mongodb.CharacterRepository
+	monsterRepo   *mongodb.MonsterRepository
 }
 
 // NewCampaignHandler creates a new campaign handler
-func NewCampaignHandler(campaignRepo *mongodb.CampaignRepository, characterRepo *mongodb.CharacterRepository) *CampaignHandler {
+func NewCampaignHandler(
+	campaignRepo *mongodb.CampaignRepository,
+	characterRepo *mongodb.CharacterRepository,
+	monsterRepo *mongodb.MonsterRepository,
+) *CampaignHandler {
 	return &CampaignHandler{
 		campaignRepo:  campaignRepo,
 		characterRepo: characterRepo,
+		monsterRepo:   monsterRepo,
 	}
 }
 
@@ -141,6 +147,10 @@ func (h *CampaignHandler) DeleteCampaign(c *gin.Context) {
 	// Characters go first. If the campaign delete then fails the characters are
 	// already gone, but the reverse order would leave unreachable orphans.
 	if err := h.characterRepo.DeleteCharactersByCampaign(ctx, campaign.CampaignID); err != nil {
+		respondRepoError(c, err)
+		return
+	}
+	if err := h.monsterRepo.DeleteMonstersByCampaign(ctx, campaign.CampaignID); err != nil {
 		respondRepoError(c, err)
 		return
 	}

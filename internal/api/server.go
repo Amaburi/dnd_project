@@ -27,10 +27,16 @@ type Server struct {
 	config           ServerConfig
 	campaignHandler  *handlers.CampaignHandler
 	characterHandler *handlers.CharacterHandler
+	monsterHandler   *handlers.MonsterHandler
 }
 
 // NewServer creates a new API server
-func NewServer(cfg ServerConfig, campaignHandler *handlers.CampaignHandler, characterHandler *handlers.CharacterHandler) *Server {
+func NewServer(
+	cfg ServerConfig,
+	campaignHandler *handlers.CampaignHandler,
+	characterHandler *handlers.CharacterHandler,
+	monsterHandler *handlers.MonsterHandler,
+) *Server {
 	// Honour the configured environment instead of pinning release mode, so
 	// app.debug actually changes anything.
 	if cfg.Debug {
@@ -52,6 +58,7 @@ func NewServer(cfg ServerConfig, campaignHandler *handlers.CampaignHandler, char
 		config:           cfg,
 		campaignHandler:  campaignHandler,
 		characterHandler: characterHandler,
+		monsterHandler:   monsterHandler,
 	}
 
 	srv.setupMiddleware()
@@ -95,6 +102,14 @@ func (s *Server) setupRoutes() {
 		v1.GET("/campaigns/:id/characters/:char_id", s.characterHandler.GetCharacter)
 		v1.PUT("/campaigns/:id/characters/:char_id", s.characterHandler.UpdateCharacter)
 		v1.DELETE("/campaigns/:id/characters/:char_id", s.characterHandler.DeleteCharacter)
+
+		// Monster statblock routes
+		v1.POST("/campaigns/:id/monsters", s.monsterHandler.CreateMonster)
+		v1.GET("/campaigns/:id/monsters", s.monsterHandler.ListMonsters)
+		v1.POST("/campaigns/:id/monsters/seed", s.monsterHandler.SeedMonsters)
+		v1.GET("/campaigns/:id/monsters/:monster_id", s.monsterHandler.GetMonster)
+		v1.PUT("/campaigns/:id/monsters/:monster_id", s.monsterHandler.UpdateMonster)
+		v1.DELETE("/campaigns/:id/monsters/:monster_id", s.monsterHandler.DeleteMonster)
 	}
 }
 

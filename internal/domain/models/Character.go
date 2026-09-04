@@ -638,6 +638,37 @@ func (c *Character) IsOverloaded() bool {
 	return c.CarriedWeight() > float64(c.CarryingCapacity())
 }
 
+// ToCombatant builds a combat entry from the character sheet.
+//
+// The counterpart to Monster.ToCombatant: both feed the same Combatant so
+// combat resolution never needs to know which kind of creature it is holding.
+// Characters do make death saves.
+func (c *Character) ToCombatant(combatantID string) Combatant {
+	kind := "player"
+	if c.Type == CharacterNPC {
+		kind = "npc"
+	}
+
+	return Combatant{
+		CombatantID:        combatantID,
+		SourceType:         SourceCharacter,
+		SourceID:           c.CharacterID,
+		Type:               kind,
+		Name:               c.Name,
+		InitiativeModifier: c.InitiativeModifier(),
+		HitPoints:          c.CombatStats.HitPoints,
+		ArmorClass:         c.ArmorClass(),
+		Status:             CombatantActive,
+		Conditions:         append([]Condition(nil), c.Conditions...),
+		Exhaustion:         c.Exhaustion,
+		Affinities:         DamageAffinities{Resistances: c.DamageResistances()},
+		MakesDeathSaves:    true,
+		DeathSaves:         c.CombatStats.DeathSaves,
+		Speed:              c.Speed(),
+		MovementRemaining:  c.Speed(),
+	}
+}
+
 // MaxAttunedItems is how many magic items a character can be attuned to.
 const MaxAttunedItems = 3
 

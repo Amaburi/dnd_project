@@ -14,11 +14,11 @@ Phases 2–5 are not started.
 |---|---|
 | Config loading, MongoDB client, indexes | Implemented, unit-tested |
 | Campaign + Character models & repositories | Implemented |
-| Campaign + Character REST CRUD | Implemented, campaign-scoped, cascading delete |
+| Campaign + Character + Monster REST CRUD | Implemented, campaign-scoped, cascading delete |
 | AI client, prompt builder, AI service | Implemented, **not wired into the API** |
 | 5e rules vocabulary + derived stats | Implemented in `models`, unit-tested |
 | Classes, subclasses, races, backgrounds, multiclassing | Implemented as tables in `models`, unit-tested |
-| Monster statblocks | **Model only** — no repository, no routes |
+| Monster statblocks | Implemented — model, repository, REST CRUD, SRD seed catalogue |
 | Session / StoryEvent / CombatEncounter | **Models only** — no repository, no routes |
 | Dice roller, rules engine, combat tracker | **Spec only** (`docs/GAME_ENGINE.md`) — no code |
 | Auth, rate limiting, Docker | **Config/docs only** — no code |
@@ -53,7 +53,7 @@ a measured reason, not because a doc still mentions them:
 make run-dev    # run from source (sources .env first)
 make run        # build ./dnd-campaign-manager, then run it
 make build
-go test ./...   # 140 tests across models, handlers, ai, config, mongodb
+go test ./...   # 153 tests across models, handlers, ai, config, mongodb
 make lint       # golangci-lint (not vendored — install separately)
 ```
 
@@ -214,6 +214,32 @@ choices + later classes' `MulticlassSkillChoices` + racial picks. `ExpertiseBudg
   weapon** and for exhaustion 3+. Carried on every `AttackProfile` as `Mode`.
 - Non-PHB races (Aasimar, Genasi, Goliath, Tabaxi, Firbolg) are included and tagged;
   `RacesFromSource(SourcePHB)` filters to core.
+
+### Monsters and combat
+
+**Monsters are an open catalogue, not a closed table.** Unlike classes and races they are
+stored, not enumerated — `SRDMonsters()` is seed data a campaign copies and may edit, never
+a source of truth. `POST /campaigns/:id/monsters/seed` stamps copies into a campaign
+(idempotent by name).
+
+**`Combatant` is the single combat representation** for both sources. Build one with
+`Monster.ToCombatant(id)` or `Character.ToCombatant(id)` — never construct it by hand, or
+affinities and the death-save flag get missed.
+
+**`Combatant.TakeDamage(amount, damageType, critical)` takes a damage type.** It used to
+take a bare amount, so resistances and immunities were unreachable on the only path that
+matters and a fire-immune creature took full fire damage in every encounter. Affinities and
+condition immunities are copied onto the combatant at conversion time.
+
+**`MakesDeathSaves` separates the two kinds of creature**: characters drop to *dying* and
+roll to stabilise, monsters die at 0. `LegendaryResistanceRemaining` tracks the boss
+resource.
+
+Statblocks derive `ProficiencyBonus()`, `XP()` and `PassivePerception()` from CR and
+ability scores rather than storing them. `Monster.Validate()` is the statblock counterpart
+of `ValidateSheet()` and runs on create only; it checks damage types, conditions, that a
+multiattack names actions the monster actually has, and that printed hit points match what
+`HitDice` averages to (`ParseHitDiceFormula`).
 
 **Progression tables** live in `class_progression.go`: `CantripsKnown()`, `SpellsKnown()`
 (for classes that know a fixed list), `PreparedSpellLimit()` (ability mod + level, half
