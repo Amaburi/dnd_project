@@ -365,3 +365,36 @@ func (r *CharacterRepository) SearchCharacters(ctx context.Context, campaignID s
 		"name":        bson.M{"$regex": regexp.QuoteMeta(query), "$options": "i"}, // Case-insensitive search
 	})
 }
+
+// UpdateSpellSlots writes back the caster's spell resources.
+//
+// It is its own method rather than part of UpdateCharacter for the reason the
+// rest of this file sets fields individually: a turn holds a character it read
+// at the start of the turn, and $set-ing that whole struct would write every
+// other field back as it was then, silently reverting anything else that had
+// changed. Only what the cast actually spent is written.
+//
+// Cantrips never reach here, because they cost nothing to write.
+func (r *CharacterRepository) UpdateSpellSlots(ctx context.Context, characterID string, spells models.Spells) error {
+	if characterID == "" {
+		return models.Invalid("character_id is required")
+	}
+
+	collection := r.client.Database().Collection(string(Characters))
+	result, err := collection.UpdateOne(
+		ctx,
+		bson.M{"character_id": characterID},
+		bson.M{"$set": bson.M{
+			"spells.slots":      spells.Slots,
+			"spells.pact_slots": spells.PactSlots,
+			"updated_at":        time.Now().UTC(),
+		}},
+	)
+	if err != nil {
+		return fmt.Errorf("failed to update spell slots: %w", err)
+	}
+	if result.MatchedCount == 0 {
+		return models.NotFound("character")
+	}
+	return nil
+}

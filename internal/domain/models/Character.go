@@ -506,6 +506,10 @@ func (c *Character) SkillRollMode(s Skill) RollMode {
 		mode = mode.Combine(RollDisadvantage)
 	}
 
+	if anyCondition(c.Conditions, clumsyCheckConditions) {
+		mode = mode.Combine(RollDisadvantage)
+	}
+
 	if s == SkillStealth {
 		if armor := c.Equipment.Armor; armor != nil && armor.Armor != nil && armor.Armor.StealthDisadvantage {
 			mode = mode.Combine(RollDisadvantage)
@@ -534,16 +538,23 @@ func (c *Character) AttackRollMode(item InventoryItem) RollMode {
 		}
 	}
 
-	return mode
+	return mode.Combine(c.conditionAttackMode())
 }
 
 // SavingThrowRollMode reports advantage or disadvantage on a saving throw from
-// the character's own state. Exhaustion applies from level 3.
-func (c *Character) SavingThrowRollMode(Ability) RollMode {
+// the character's own state.
+//
+// Exhaustion applies from level 3 to every save. Restrained applies only to
+// Dexterity: being held does not make you worse at resisting poison.
+func (c *Character) SavingThrowRollMode(a Ability) RollMode {
+	mode := RollNormal
 	if ExhaustionEffectsFor(c.Exhaustion).DisadvantageOnAttacksAndSaves {
-		return RollDisadvantage
+		mode = mode.Combine(RollDisadvantage)
 	}
-	return RollNormal
+	if a == AbilityDexterity && c.HasCondition(ConditionRestrained) {
+		mode = mode.Combine(RollDisadvantage)
+	}
+	return mode
 }
 
 // Size is the creature size from the character's race.

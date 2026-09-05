@@ -28,7 +28,7 @@ func checkFacts() map[string]string {
 		"ability": "dexterity", "skill": "stealth", "dc": "15",
 		"roll_mode": "normal", "natural": "12", "all_rolls": "12",
 		"modifier": "+10", "total": "22", "outcome": "success",
-		"margin": "7", "was_close": "no",
+		"margin": "7", "was_close": "no", "automatic_failure": "no",
 		"fact_summary": "Thistle succeeds on a DC 15 stealth skill check",
 	}
 }
@@ -168,6 +168,19 @@ func TestNarrationStyleHasDefaults(t *testing.T) {
 
 // Every template in defaultPrompts must be reachable from a Service method: an
 // uncallable prompt drifts out of date unnoticed.
+// castFacts is a complete spell fact set, matching rules.CastResult.Facts().
+func castFacts() map[string]string {
+	return map[string]string{
+		"caster": "Alaric", "spell": "Magic Missile", "slot_level": "1",
+		"target": "Goblin", "outcome": "hit", "projectiles": "3", "hits": "3",
+		"damage_total": "10", "damage_type": "force", "damage_affinity": "normal",
+		"healing": "0", "condition": "none",
+		"save_ability": "none", "save_dc": "0", "save_total": "none", "save_automatic": "no",
+		"target_hp": "0/7", "target_status": "dead",
+		"fact_summary": "Alaric casts Magic Missile for 10 force damage; Goblin dies",
+	}
+}
+
 func TestEveryTemplateHasACaller(t *testing.T) {
 	// Each call gets its own reply, so the two JSON templates are answered
 	// with JSON and the rest with prose.
@@ -194,6 +207,10 @@ func TestEveryTemplateHasACaller(t *testing.T) {
 		},
 		"action_narration": func() error {
 			_, err := service.NarrateAction(ctx, &NarrationRequest{Facts: attackFacts()})
+			return err
+		},
+		"spell_narration": func() error {
+			_, err := service.NarrateCast(ctx, &NarrationRequest{Facts: castFacts()})
 			return err
 		},
 		"check_narration": func() error {

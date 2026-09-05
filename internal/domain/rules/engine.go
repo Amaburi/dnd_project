@@ -55,6 +55,13 @@ type CheckResult struct {
 	// Margin is how far the total cleared or missed the DC, which is what
 	// separates "just barely" from "comfortably".
 	Margin int `json:"margin"`
+
+	// AutomaticFailure marks a save that was never in doubt: a paralysed or
+	// unconscious creature fails Strength and Dexterity saves without rolling.
+	// It is reported rather than hidden so the narration can say the creature
+	// could not even try, instead of describing a roll that did not decide
+	// anything.
+	AutomaticFailure bool `json:"automatic_failure,omitempty"`
 }
 
 // Succeeded reports whether the check met its DC.
@@ -69,14 +76,23 @@ func (r CheckResult) Summary() string {
 		label = string(r.Skill)
 	}
 
+	kind := strings.ReplaceAll(string(r.Kind), "_", " ")
+
+	// A save that was never rolled must not be described as a roll. The
+	// narration repeats this sentence faithfully, so an invented die becomes an
+	// invented scene.
+	if r.AutomaticFailure {
+		return fmt.Sprintf("%s automatically fails a DC %d %s %s and cannot resist",
+			r.Actor, r.DC, label, kind)
+	}
+
 	verb := "fails"
 	if r.Succeeded() {
 		verb = "succeeds on"
 	}
 
 	return fmt.Sprintf("%s %s a DC %d %s %s (rolled %s = %d)",
-		r.Actor, verb, r.DC, label, strings.ReplaceAll(string(r.Kind), "_", " "),
-		formatRolls(r.Roll), r.Roll.Total)
+		r.Actor, verb, r.DC, label, kind, formatRolls(r.Roll), r.Roll.Total)
 }
 
 // Facts returns the values a narration prompt may reference.
@@ -88,21 +104,36 @@ func (r CheckResult) Facts() map[string]string {
 	if skill == "" {
 		skill = "-"
 	}
+
+	// No die was cast, so none is reported. "none" is the honest value; a 0
+	// would read as a roll and the narration would describe it.
+	natural, allRolls, total := "none", "none", "none"
+	rollMode := string(r.Roll.Mode)
+	if !r.AutomaticFailure {
+		natural = strconv.Itoa(r.Roll.Natural)
+		allRolls = formatRolls(r.Roll)
+		total = strconv.Itoa(r.Roll.Total)
+	}
+	if rollMode == "" {
+		rollMode = string(models.RollNormal)
+	}
+
 	return map[string]string{
-		"check_kind":   string(r.Kind),
-		"actor":        r.Actor,
-		"ability":      string(r.Ability),
-		"skill":        skill,
-		"dc":           strconv.Itoa(r.DC),
-		"roll_mode":    string(r.Roll.Mode),
-		"natural":      strconv.Itoa(r.Roll.Natural),
-		"all_rolls":    formatRolls(r.Roll),
-		"modifier":     withSign(r.Modifier),
-		"total":        strconv.Itoa(r.Roll.Total),
-		"outcome":      string(r.Outcome),
-		"margin":       strconv.Itoa(r.Margin),
-		"was_close":    boolText(abs(r.Margin) <= 2),
-		"fact_summary": r.Summary(),
+		"check_kind":        string(r.Kind),
+		"actor":             r.Actor,
+		"ability":           string(r.Ability),
+		"skill":             skill,
+		"dc":                strconv.Itoa(r.DC),
+		"roll_mode":         rollMode,
+		"natural":           natural,
+		"all_rolls":         allRolls,
+		"modifier":          withSign(r.Modifier),
+		"total":             total,
+		"outcome":           string(r.Outcome),
+		"margin":            strconv.Itoa(r.Margin),
+		"was_close":         boolText(abs(r.Margin) <= 2),
+		"automatic_failure": boolText(r.AutomaticFailure),
+		"fact_summary":      r.Summary(),
 	}
 }
 
@@ -297,9 +328,17 @@ func (e *Engine) WeaponAttack(
 		return AttackResult{}, err
 	}
 
-	mode := profile.Mode.Combine(situational)
+	// The target's own state is part of the roll. Before this, conditions were
+	// recorded and no attack ever read them: a paralysed goblin was swung at
+	// exactly as hard as a standing one.
+	melee, close := reachOf(profile)
+	mode := profile.Mode.
+		Combine(target.DefenderAttackMode(melee)).
+		Combine(situational)
+
 	roll := e.roller.D20(profile.AttackBonus, mode)
 	outcome := models.ResolveAttack(roll, target.ArmorClass, profile.CritRange)
+	outcome = upgradeToCritical(outcome, target, close)
 
 	result := AttackResult{
 		Attacker: attacker.Name, Target: target.Name, Weapon: profile.Name,
@@ -355,6 +394,35 @@ func (e *Engine) MonsterAttack(
 	result.TargetStatus = target.Status
 	result.TargetHP = target.HitPoints
 	return result, nil
+}
+
+// reachOf reports whether an attack is a melee attack, and whether it is made
+// from within five feet.
+//
+// The distinction matters twice: prone grants advantage in melee and imposes
+// disadvantage at range, and an automatic critical against a helpless creature
+// needs the attacker close enough to place the blow -- a reach weapon at ten
+// feet does not qualify, nor does an arrow.
+func reachOf(profile models.AttackProfile) (melee, withinFiveFeet bool) {
+	if profile.RangeNormal > 0 {
+		return false, false
+	}
+	reach := profile.Reach
+	if reach == 0 {
+		reach = 5
+	}
+	return true, reach <= 5
+}
+
+// upgradeToCritical turns a hit on a helpless creature into a critical.
+//
+// Only a hit: a natural 1 still misses, because an automatic critical is a
+// rule about hits and not about everything.
+func upgradeToCritical(outcome models.AttackOutcome, target *models.Combatant, withinFiveFeet bool) models.AttackOutcome {
+	if outcome == models.AttackHit && target.AutoCriticalOnHit(withinFiveFeet) {
+		return models.AttackCritical
+	}
+	return outcome
 }
 
 // applyDamage rolls damage and hands it to the target, recording both what was

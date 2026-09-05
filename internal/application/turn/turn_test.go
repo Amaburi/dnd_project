@@ -20,10 +20,18 @@ import (
 // Narrow enough to be obvious, which is the point of the interfaces: the
 // orchestration is what needs testing and a database would only obscure it.
 
-type fakeCharacters struct{ character *models.Character }
+type fakeCharacters struct {
+	character *models.Character
+	saved     []models.Spells
+}
 
 func (f *fakeCharacters) GetCharacterByCharacterID(context.Context, string) (*models.Character, error) {
 	return f.character, nil
+}
+
+func (f *fakeCharacters) UpdateSpellSlots(_ context.Context, _ string, spells models.Spells) error {
+	f.saved = append(f.saved, spells)
+	return nil
 }
 
 type fakeMonsters struct {
@@ -39,6 +47,9 @@ func (f *fakeMonsters) UpdateHitPoints(_ context.Context, _, _ string, hp models
 	f.writes = append(f.writes, hp)
 	return nil
 }
+
+// hpWrites reads better at a call site than .writes does.
+func (f *fakeMonsters) hpWrites() []models.HitPoints { return f.writes }
 
 type fakeSessions struct{ session *models.Session }
 
@@ -120,10 +131,11 @@ func goblin() *models.Monster {
 }
 
 type harness struct {
-	service  *Service
-	monsters *fakeMonsters
-	events   *fakeEvents
-	stub     *ai.StubClient
+	service    *Service
+	monsters   *fakeMonsters
+	characters *fakeCharacters
+	events     *fakeEvents
+	stub       *ai.StubClient
 }
 
 // newHarness wires a turn service whose only randomness is a fixed seed and
@@ -140,11 +152,13 @@ func newHarness(t *testing.T, replies ...string) *harness {
 		Location: models.SessionLocation{CurrentLocation: "the wine cellar"},
 	}}
 
+	characters := &fakeCharacters{character: hero()}
 	service := NewService(
-		&fakeCharacters{character: hero()}, monsters, sessions, events,
+		characters, monsters, sessions, events,
 		narrator, rules.NewEngine(dice.NewSeeded(1337)),
 	)
-	return &harness{service: service, monsters: monsters, events: events, stub: stub}
+	return &harness{service: service, monsters: monsters, characters: characters,
+		events: events, stub: stub}
 }
 
 func request(input string) *Request {
@@ -577,5 +591,429 @@ func TestAFailedCompactionDoesNotFailTheTurn(t *testing.T) {
 	}
 	if len(h.events.appended) != 1 {
 		t.Errorf("appended %d events, want the turn's one", len(h.events.appended))
+	}
+}
+
+// --- spellcasting ------------------------------------------------------------
+
+func wizard() *models.Character {
+	c := hero()
+	c.Name = "Alaric"
+	c.BasicInfo.Classes = []models.ClassLevel{{Class: models.ClassWizard, Subclass: "evocation", Level: 5}}
+	c.AbilityScores.Intelligence = 18
+	c.ApplyClassDefaults()
+	c.Spells.SpellcastingAbility = models.AbilityIntelligence
+	c.Spells.Cantrips = []string{"Fire Bolt"}
+	c.Spells.Known = []models.Spell{
+		{Name: "Magic Missile", Level: 1},
+		{Name: "Burning Hands", Level: 1},
+		{Name: "Mage Hand", Level: 0},
+	}
+	c.Spells.Slots = []models.SpellSlot{{Level: 1, Total: 4}, {Level: 2, Total: 3}, {Level: 3, Total: 2}}
+	return c
+}
+
+func castingHarness(t *testing.T, replies ...string) *harness {
+	t.Helper()
+	h := newHarness(t, replies...)
+	h.characters.character = wizard()
+	return h
+}
+
+// The gap this closes: casting used to fall through to plain narration, so a
+// Magic Missile did no damage, cost no slot, and the narrator invented the
+// outcome -- exactly what the whole two-call design exists to prevent.
+func TestCastingResolvesThroughTheEngine(t *testing.T) {
+	h := castingHarness(t,
+		`{"action":"cast_spell","spell":"Magic Missile","target":"Goblin","slot_level":1,"confidence":"high"}`,
+		"Three darts of force streak across the cellar.")
+
+	before := h.monsters.monsters[0].HitPoints.Current
+
+	result, err := h.service.TakeAction(context.Background(), request("I cast magic missile at the goblin"))
+	if err != nil {
+		t.Fatalf("TakeAction: %v", err)
+	}
+	if result.Cast == nil {
+		t.Fatal("the cast was not resolved: Result.Cast is nil")
+	}
+	if result.Cast.Spell != "Magic Missile" {
+		t.Errorf("resolved %q", result.Cast.Spell)
+	}
+	if result.Cast.Damage == nil || result.Cast.Damage.Dealt <= 0 {
+		t.Fatal("Magic Missile dealt no damage")
+	}
+	if got := h.monsters.monsters[0].HitPoints.Current; got >= before {
+		t.Errorf("the goblin is at %d hit points, was %d", got, before)
+	}
+	if len(h.monsters.hpWrites()) == 0 {
+		t.Error("the damage was never persisted")
+	}
+}
+
+// A spent slot that is not saved is a spell the character can cast forever.
+func TestCastingPersistsTheSpentSlot(t *testing.T) {
+	h := castingHarness(t,
+		`{"action":"cast_spell","spell":"Magic Missile","target":"Goblin","slot_level":1,"confidence":"high"}`,
+		"Darts of force.")
+
+	if _, err := h.service.TakeAction(context.Background(), request("I cast magic missile")); err != nil {
+		t.Fatalf("TakeAction: %v", err)
+	}
+
+	if len(h.characters.saved) != 1 {
+		t.Fatalf("the character was saved %d times, want once", len(h.characters.saved))
+	}
+	if got := h.characters.saved[0].AvailableSlots(1); got != 3 {
+		t.Errorf("%d level 1 slots persisted, want 3 of 4 after one cast", got)
+	}
+}
+
+// A cantrip costs nothing, so there is nothing to write.
+func TestCastingACantripSavesNothing(t *testing.T) {
+	h := castingHarness(t,
+		`{"action":"cast_spell","spell":"Fire Bolt","target":"Goblin","confidence":"high"}`,
+		"A mote of flame.")
+
+	if _, err := h.service.TakeAction(context.Background(), request("I cast fire bolt at the goblin")); err != nil {
+		t.Fatalf("TakeAction: %v", err)
+	}
+	if len(h.characters.saved) != 0 {
+		t.Errorf("a cantrip wrote the character back %d times", len(h.characters.saved))
+	}
+}
+
+// A save spell must roll the *target's* save, which means reading the monster's
+// own modifier rather than assuming a flat one.
+func TestSaveSpellRollsTheTargetsSave(t *testing.T) {
+	h := castingHarness(t,
+		`{"action":"cast_spell","spell":"Burning Hands","target":"Goblin","slot_level":1,"confidence":"high"}`,
+		"Flame washes over the goblin.")
+
+	result, err := h.service.TakeAction(context.Background(), request("I cast burning hands"))
+	if err != nil {
+		t.Fatalf("TakeAction: %v", err)
+	}
+	if result.Cast == nil || result.Cast.Save == nil {
+		t.Fatal("Burning Hands rolled no saving throw")
+	}
+	if result.Cast.Save.Ability != models.AbilityDexterity {
+		t.Errorf("the goblin rolled a %s save, want dexterity", result.Cast.Save.Ability)
+	}
+}
+
+// A utility spell has nothing to resolve, so it is narrated -- but it still
+// costs its slot, and a slot that is never spent is not a resource.
+func TestUtilitySpellIsNarratedNotResolved(t *testing.T) {
+	h := castingHarness(t,
+		`{"action":"cast_spell","spell":"Mage Hand","confidence":"high"}`,
+		"A spectral hand unfurls.")
+
+	result, err := h.service.TakeAction(context.Background(), request("I cast mage hand"))
+	if err != nil {
+		t.Fatalf("TakeAction: %v", err)
+	}
+	if result.Cast != nil {
+		t.Errorf("a utility spell was resolved mechanically: %+v", result.Cast)
+	}
+	if result.Narration == "" {
+		t.Error("a utility spell produced no narration")
+	}
+}
+
+// A spell the character does not know must not reach the engine.
+func TestCastingAnUnknownSpellAsksForClarification(t *testing.T) {
+	h := castingHarness(t,
+		`{"action":"cast_spell","spell":"Meteor Swarm","target":"Goblin","slot_level":9,"confidence":"high"}`,
+		"unused")
+
+	result, err := h.service.TakeAction(context.Background(), request("I cast meteor swarm"))
+	if err != nil {
+		t.Fatalf("TakeAction: %v", err)
+	}
+	if !result.NeedsClarification {
+		t.Errorf("a spell the wizard does not know was resolved: %+v", result.Cast)
+	}
+	if len(h.events.appended) != 0 {
+		t.Error("an unresolvable cast was written to the log")
+	}
+}
+
+// Casting from a slot the character has already spent is refused by the rules,
+// and the refusal has to reach the player rather than crashing the turn.
+func TestCastingWithNoSlotsLeftIsReportedNotResolved(t *testing.T) {
+	h := castingHarness(t,
+		`{"action":"cast_spell","spell":"Magic Missile","target":"Goblin","slot_level":1,"confidence":"high"}`,
+		"unused")
+	h.characters.character.Spells.Slots = []models.SpellSlot{{Level: 1, Total: 1, Expended: 1}}
+
+	result, err := h.service.TakeAction(context.Background(), request("I cast magic missile"))
+	if err != nil {
+		t.Fatalf("an empty slot should not fail the turn: %v", err)
+	}
+	if !result.NeedsClarification {
+		t.Error("casting with no slots should come back as something the player must fix")
+	}
+	if result.Clarification == "" {
+		t.Error("the refusal carries no explanation")
+	}
+}
+
+// An omitted slot level means "cast it at its own level", not "cast it at 0".
+func TestOmittedSlotLevelDefaultsToTheSpellsOwnLevel(t *testing.T) {
+	h := castingHarness(t,
+		`{"action":"cast_spell","spell":"Magic Missile","target":"Goblin","confidence":"high"}`,
+		"Darts of force.")
+
+	result, err := h.service.TakeAction(context.Background(), request("I cast magic missile"))
+	if err != nil {
+		t.Fatalf("TakeAction: %v", err)
+	}
+	if result.Cast == nil {
+		t.Fatal("the cast did not resolve")
+	}
+	if result.Cast.SlotLevel != 1 {
+		t.Errorf("cast at slot level %d, want 1", result.Cast.SlotLevel)
+	}
+}
+
+// --- incapacitation ----------------------------------------------------------
+
+// The bug this closes: nothing checked whether the character could act, so a
+// wizard at 0 hit points could cast Fireball and a paralysed fighter could
+// swing. It reads perfectly normally in a log, which is what makes it bad.
+func TestADownedCharacterCannotAct(t *testing.T) {
+	cases := []struct{ name, reply, input string }{
+		{"attack", `{"action":"attack","target":"Goblin","weapon":"Rapier","confidence":"high"}`, "I stab the goblin"},
+		{"narrative", `{"action":"narrative","confidence":"high"}`, "I search the room"},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			h := newHarness(t, tc.reply, "unused")
+			h.characters.character.CombatStats.HitPoints.Current = 0
+
+			result, err := h.service.TakeAction(context.Background(), request(tc.input))
+			if err != nil {
+				t.Fatalf("being downed should not fail the turn: %v", err)
+			}
+			if !result.NeedsClarification {
+				t.Errorf("%q was resolved for an unconscious character", tc.input)
+			}
+			if !strings.Contains(strings.ToLower(result.Clarification), "unconscious") {
+				t.Errorf("the refusal does not explain why: %q", result.Clarification)
+			}
+			if len(h.events.appended) != 0 {
+				t.Error("an impossible action was written to the log")
+			}
+			// The sentence still had to be parsed to know what was attempted,
+			// but nothing was narrated: one call, not two.
+			if len(h.stub.Requests) != 1 {
+				t.Errorf("the provider was called %d times, want only the parse", len(h.stub.Requests))
+			}
+		})
+	}
+}
+
+// A dead character is the one case settled before the parse: they cannot even
+// roll a saving throw, so there is nothing a sentence could turn out to mean.
+func TestADeadCharacterIsRefusedBeforeAnyProviderCall(t *testing.T) {
+	h := newHarness(t, "unused")
+	h.characters.character.CombatStats.HitPoints.Current = 0
+	h.characters.character.CombatStats.DeathSaves = models.DeathSaves{Failures: 3}
+
+	result, err := h.service.TakeAction(context.Background(), request("I stab the goblin"))
+	if err != nil {
+		t.Fatalf("TakeAction: %v", err)
+	}
+	if !result.NeedsClarification || !strings.Contains(strings.ToLower(result.Clarification), "dead") {
+		t.Errorf("result = %+v, want a refusal naming death", result)
+	}
+	if len(h.stub.Requests) != 0 {
+		t.Errorf("the provider was called %d times for a dead character", len(h.stub.Requests))
+	}
+}
+
+func TestAParalysedCharacterCannotAct(t *testing.T) {
+	h := newHarness(t, `{"action":"attack","target":"Goblin","weapon":"Rapier","confidence":"high"}`, "unused")
+	h.characters.character.Conditions = []models.Condition{models.ConditionParalyzed}
+
+	result, err := h.service.TakeAction(context.Background(), request("I stab the goblin"))
+	if err != nil {
+		t.Fatalf("TakeAction: %v", err)
+	}
+	if !result.NeedsClarification {
+		t.Fatal("a paralysed character was allowed to attack")
+	}
+	if !strings.Contains(result.Clarification, "paralyzed") {
+		t.Errorf("the refusal does not name the condition: %q", result.Clarification)
+	}
+}
+
+// A saving throw is not an action. An unconscious creature still makes them --
+// that is the whole of a dying character's turn -- so the guard must not stop
+// one.
+func TestADownedCharacterStillMakesSavingThrows(t *testing.T) {
+	h := newHarness(t,
+		`{"action":"saving_throw","ability":"constitution","suggested_dc":10,"confidence":"high"}`,
+		"Thistle's chest rises, barely.")
+	h.characters.character.CombatStats.HitPoints.Current = 0
+
+	result, err := h.service.TakeAction(context.Background(), request("I try to hold on"))
+	if err != nil {
+		t.Fatalf("TakeAction: %v", err)
+	}
+	if result.NeedsClarification {
+		t.Fatalf("a saving throw was refused: %q", result.Clarification)
+	}
+	if result.Check == nil {
+		t.Error("the saving throw did not resolve")
+	}
+}
+
+// An incapacitated character can still talk, so the guard must not be a single
+// blanket refusal.
+func TestAnIncapacitatedCharacterCanStillTalk(t *testing.T) {
+	h := newHarness(t, `{"action":"talk","confidence":"high"}`, "\"Behind you,\" Thistle croaks.")
+	h.characters.character.Conditions = []models.Condition{models.ConditionIncapacitated}
+
+	result, err := h.service.TakeAction(context.Background(), request("I shout a warning"))
+	if err != nil {
+		t.Fatalf("TakeAction: %v", err)
+	}
+	if result.NeedsClarification {
+		t.Errorf("an incapacitated character was stopped from speaking: %q", result.Clarification)
+	}
+}
+
+// A paralysed one cannot.
+func TestAParalysedCharacterCannotTalk(t *testing.T) {
+	h := newHarness(t, `{"action":"talk","confidence":"high"}`, "unused")
+	h.characters.character.Conditions = []models.Condition{models.ConditionParalyzed}
+
+	result, err := h.service.TakeAction(context.Background(), request("I shout a warning"))
+	if err != nil {
+		t.Fatalf("TakeAction: %v", err)
+	}
+	if !result.NeedsClarification {
+		t.Error("a paralysed character was allowed to speak")
+	}
+}
+
+// Being held is not being helpless: a grappled character still fights.
+func TestAGrappledCharacterStillFights(t *testing.T) {
+	h := newHarness(t,
+		`{"action":"attack","target":"Goblin","weapon":"Rapier","confidence":"high"}`,
+		"The rapier finds a gap.")
+	h.characters.character.Conditions = []models.Condition{models.ConditionGrappled, models.ConditionProne}
+
+	result, err := h.service.TakeAction(context.Background(), request("I stab the goblin"))
+	if err != nil {
+		t.Fatalf("TakeAction: %v", err)
+	}
+	if result.NeedsClarification {
+		t.Errorf("a grappled character was stopped from attacking: %q", result.Clarification)
+	}
+	if result.Attack == nil {
+		t.Error("the attack did not resolve")
+	}
+}
+
+// --- situational advantage ---------------------------------------------------
+
+// The parser may name a circumstance the rules cannot derive -- striking from
+// hiding is the common one -- and it has to reach the roll.
+func TestParsedAdvantageReachesTheRoll(t *testing.T) {
+	h := newHarness(t,
+		`{"action":"attack","target":"Goblin","weapon":"Rapier","advantage":"attacker_unseen","confidence":"high"}`,
+		"The blade comes out of nowhere.")
+
+	result, err := h.service.TakeAction(context.Background(), request("I stab the goblin from hiding"))
+	if err != nil {
+		t.Fatalf("TakeAction: %v", err)
+	}
+	if result.Attack == nil {
+		t.Fatal("the attack did not resolve")
+	}
+	if len(result.Attack.Roll.Rolls) != 2 {
+		t.Errorf("rolled %d dice, want two: attacking unseen grants advantage",
+			len(result.Attack.Roll.Rolls))
+	}
+	if result.Intent.Advantage != models.ReasonAttackerUnseen {
+		t.Errorf("the reason was lost: %q", result.Intent.Advantage)
+	}
+}
+
+func TestParsedDisadvantageReachesTheRoll(t *testing.T) {
+	h := newHarness(t,
+		`{"action":"attack","target":"Goblin","weapon":"Rapier","advantage":"awkward_position","confidence":"high"}`,
+		"The footing gives.")
+
+	result, err := h.service.TakeAction(context.Background(), request("I stab at the goblin while squeezing through the crack"))
+	if err != nil {
+		t.Fatalf("TakeAction: %v", err)
+	}
+	if len(result.Attack.Roll.Rolls) != 2 {
+		t.Errorf("rolled %d dice, want two for disadvantage", len(result.Attack.Roll.Rolls))
+	}
+}
+
+// A reason the model invented must change nothing rather than break the turn:
+// an unrecognised circumstance is not a mechanical claim.
+func TestAnInventedAdvantageReasonIsIgnored(t *testing.T) {
+	h := newHarness(t,
+		`{"action":"attack","target":"Goblin","weapon":"Rapier","advantage":"i_am_simply_better","confidence":"high"}`,
+		"The blade finds a gap.")
+
+	result, err := h.service.TakeAction(context.Background(), request("I stab the goblin"))
+	if err != nil {
+		t.Fatalf("an invented reason should not fail the turn: %v", err)
+	}
+	if result.Attack == nil {
+		t.Fatal("the attack did not resolve")
+	}
+	if len(result.Attack.Roll.Rolls) != 1 {
+		t.Errorf("rolled %d dice; an invented reason must grant nothing", len(result.Attack.Roll.Rolls))
+	}
+	if result.Intent.Advantage != models.ReasonNone {
+		t.Errorf("an invented reason survived normalisation: %q", result.Intent.Advantage)
+	}
+}
+
+// A skill check gets the same treatment: helping an ally is advantage.
+func TestParsedAdvantageAppliesToChecksToo(t *testing.T) {
+	h := newHarness(t,
+		`{"action":"skill_check","skill":"athletics","suggested_dc":15,"advantage":"ally_helping","confidence":"high"}`,
+		"Together they heave.")
+
+	result, err := h.service.TakeAction(context.Background(), request("I shove the door with Sildar's help"))
+	if err != nil {
+		t.Fatalf("TakeAction: %v", err)
+	}
+	if result.Check == nil {
+		t.Fatal("the check did not resolve")
+	}
+	if len(result.Check.Roll.Rolls) != 2 {
+		t.Errorf("rolled %d dice, want two: a helping ally grants advantage",
+			len(result.Check.Roll.Rolls))
+	}
+}
+
+// Casting is an attack too when the spell says so.
+func TestParsedAdvantageAppliesToSpellAttacks(t *testing.T) {
+	h := castingHarness(t,
+		`{"action":"cast_spell","spell":"Fire Bolt","target":"Goblin","advantage":"attacker_unseen","confidence":"high"}`,
+		"A mote of flame out of the dark.")
+
+	result, err := h.service.TakeAction(context.Background(), request("I cast fire bolt from the shadows"))
+	if err != nil {
+		t.Fatalf("TakeAction: %v", err)
+	}
+	if result.Cast == nil || len(result.Cast.Attacks) != 1 {
+		t.Fatalf("the cast did not resolve to one attack: %+v", result.Cast)
+	}
+	if len(result.Cast.Attacks[0].Roll.Rolls) != 2 {
+		t.Errorf("rolled %d dice, want two for advantage",
+			len(result.Cast.Attacks[0].Roll.Rolls))
 	}
 }

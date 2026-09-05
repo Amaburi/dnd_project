@@ -112,3 +112,59 @@ func (a DamageAffinity) Apply(amount int) int {
 		return amount
 	}
 }
+
+// The three capabilities a condition can take away.
+//
+// They are separate lists rather than one "helpless" flag because 5e keeps
+// them separate, and conflating them is its own bug: an incapacitated creature
+// can still speak and still walk, a grappled one can still swing a sword, and
+// a stunned one can speak, if only falteringly.
+var (
+	// ActionPreventingConditions stop a creature taking actions and reactions.
+	// The four beyond "incapacitated" all include it by definition.
+	ActionPreventingConditions = []Condition{
+		ConditionIncapacitated, ConditionParalyzed, ConditionPetrified,
+		ConditionStunned, ConditionUnconscious,
+	}
+
+	// MovementPreventingConditions reduce a creature's speed to zero.
+	// Incapacitated is deliberately absent: it costs actions, not movement.
+	MovementPreventingConditions = []Condition{
+		ConditionGrappled, ConditionParalyzed, ConditionPetrified,
+		ConditionRestrained, ConditionStunned, ConditionUnconscious,
+	}
+
+	// SpeechPreventingConditions silence a creature. Stunned is absent: a
+	// stunned creature can speak, only falteringly.
+	SpeechPreventingConditions = []Condition{
+		ConditionParalyzed, ConditionPetrified, ConditionUnconscious,
+	}
+)
+
+func inConditions(list []Condition, c Condition) bool {
+	for _, known := range list {
+		if c == known {
+			return true
+		}
+	}
+	return false
+}
+
+// PreventsAction reports whether this condition stops a creature acting.
+func (c Condition) PreventsAction() bool { return inConditions(ActionPreventingConditions, c) }
+
+// PreventsMovement reports whether this condition reduces speed to zero.
+func (c Condition) PreventsMovement() bool { return inConditions(MovementPreventingConditions, c) }
+
+// PreventsSpeech reports whether this condition silences a creature.
+func (c Condition) PreventsSpeech() bool { return inConditions(SpeechPreventingConditions, c) }
+
+// firstPreventing returns the first condition in held that satisfies blocks.
+func firstPreventing(held []Condition, blocks func(Condition) bool) (Condition, bool) {
+	for _, c := range held {
+		if blocks(c) {
+			return c, true
+		}
+	}
+	return "", false
+}

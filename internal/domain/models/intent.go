@@ -85,6 +85,21 @@ type Intent struct {
 	Spell   string  `json:"spell,omitempty"`
 	Item    string  `json:"item,omitempty"`
 
+	// Advantage is a circumstance the parser read from the sentence that the
+	// rules cannot derive from recorded state -- striking from hiding, an ally
+	// helping. It is a closed list: free text here would turn "I attack with
+	// tremendous advantage" into a mechanical claim.
+	//
+	// Everything derivable (target conditions, the attacker's own conditions,
+	// exhaustion) is derived by the engine instead, and this only combines with
+	// it -- advantage and disadvantage never stack, and one of each cancels.
+	Advantage AdvantageReason `json:"advantage,omitempty"`
+
+	// SlotLevel is the spell slot the caster is spending. Zero means the
+	// spell's own level, never a free cast -- a levelled spell "at level 0"
+	// would cost nothing, which is the one reading that must not be possible.
+	SlotLevel int `json:"slot_level,omitempty"`
+
 	// SuggestedDC is the difficulty the parser proposes. The DM is free to
 	// overrule it; nothing resolves against it until someone accepts it.
 	SuggestedDC int `json:"suggested_dc,omitempty"`
@@ -236,6 +251,19 @@ func (i *Intent) Normalise() {
 	if i.Confidence == "" {
 		i.Confidence = ConfidenceMedium
 	}
+	// An unrecognised circumstance grants nothing rather than breaking the
+	// turn: a model that invents one should change no dice.
+	i.Advantage = AdvantageReason(slug(string(i.Advantage)))
+	if !i.Advantage.Valid() {
+		i.Advantage = ReasonNone
+	}
+
+	if i.SlotLevel < 0 {
+		i.SlotLevel = 0
+	}
+	if i.SlotLevel > 9 {
+		i.SlotLevel = 9
+	}
 	if i.SuggestedDC != 0 {
 		if i.SuggestedDC < 5 {
 			i.SuggestedDC = 5
@@ -259,6 +287,9 @@ func (i Intent) Validate(opts ActionOptions) error {
 	}
 	if !i.Confidence.Valid() {
 		problems = append(problems, fmt.Sprintf("unknown confidence %q", i.Confidence))
+	}
+	if !i.Advantage.Valid() {
+		problems = append(problems, fmt.Sprintf("unknown advantage reason %q", i.Advantage))
 	}
 
 	switch i.Action {

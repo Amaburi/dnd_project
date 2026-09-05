@@ -68,6 +68,8 @@ Reply with ONE JSON object and nothing else. No prose, no markdown fence, no exp
   "weapon": "exact name from Weapons carried, or empty",
   "spell": "exact name from Spells known, or empty",
   "item": "exact name from Items carried, or empty",
+  "slot_level": 0,
+  "advantage": "" | "attacker_unseen" | "ally_helping" | "target_unseen" | "awkward_position",
   "suggested_dc": 5 | 10 | 15 | 20 | 25 | 30,
   "confidence": "high" | "medium" | "low",
   "clarification": "a question to ask the player, required when action is unclear",
@@ -77,6 +79,8 @@ Reply with ONE JSON object and nothing else. No prose, no markdown fence, no exp
 ## Choosing the action
 
 - "attack" only when the player strikes a named creature that is in play.
+- "cast_spell" when the player casts something on the Spells known list. Set
+  "target" when the spell is aimed at a creature.
 - "skill_check" when success is uncertain and a listed skill decides it.
 - "saving_throw" only when something is being resisted, not attempted.
 - "narrative" when nothing is at stake: looking, talking to no one, describing.
@@ -92,6 +96,17 @@ Reply with ONE JSON object and nothing else. No prose, no markdown fence, no exp
   say so in the clarification.
 - Difficulty: 5 very easy, 10 easy, 15 medium, 20 hard, 25 very hard,
   30 nearly impossible. Use 0 when no check applies.
+- "advantage" names a circumstance the player DESCRIBED, from that list and no
+  other. Leave it "" unless their sentence actually says so. You are reporting
+  what they said, not judging whether they deserve an edge -- and never invent a
+  reason, because an unrecognised one is discarded and changes no dice.
+  Conditions the engine already knows about (a prone, paralysed, restrained or
+  unconscious target; the attacker being poisoned, frightened or blinded) are
+  applied automatically. Do NOT name them here; doing so would count them twice.
+- "slot_level" is only for cast_spell. Use 0 unless the player explicitly says
+  they are casting at a higher level ("fireball at 5th level"); 0 means the
+  spell's own level. Never raise it on the player's behalf -- spending a bigger
+  slot than they asked for is spending a resource they did not offer.
 - Set confidence honestly. "low" is a useful answer; a confident wrong parse is
   the worst outcome.`,
 			User: `Player said: "{{player_input}}"
@@ -125,6 +140,35 @@ than a non-event.`,
 Scene: {{context}}`,
 		},
 
+		// A spell is not a sword. action_narration asks for an attacker, a
+		// weapon and a hit; a Fireball has none of those and three beams of
+		// Eldritch Blast are not one swing, so casting gets its own template.
+		"spell_narration": {
+			System: `You narrate one spell that has already been cast and resolved in a D&D 5e game. Voice: {{narrative_voice}}. Tone: {{combat_tone}}.
+
+` + narrationContract + `
+
+Two or three sentences. Make the magic feel like this particular spell rather
+than generic light and noise. Several projectiles are several impacts, not one.
+A resisted spell still happens -- describe the target enduring it, not the spell
+failing to occur.`,
+			User: `FACTS (authoritative):
+- Caster: {{caster}}
+- Spell: {{spell}} (cast at slot level {{slot_level}})
+- Target: {{target}}
+- Outcome: {{outcome}}
+- Projectiles: {{projectiles}}, of which {{hits}} landed
+- Saving throw: {{save_ability}} against DC {{save_dc}}, target rolled {{save_total}}
+  (automatic failure, no roll made: {{save_automatic}})
+- Damage dealt: {{damage_total}} {{damage_type}} ({{damage_affinity}})
+- Hit points restored: {{healing}}
+- Condition imposed: {{condition}}
+- Target now: {{target_hp}} hit points, status {{target_status}}
+- Engine summary: {{fact_summary}}
+
+Scene: {{context}}`,
+		},
+
 		"check_narration": {
 			System: `You narrate the result of one ability check, skill check or saving throw in D&D 5e. Voice: {{narrative_voice}}.
 
@@ -138,7 +182,7 @@ failure should complicate the scene rather than simply stop it.`,
 - Test: {{check_kind}} using {{ability}} (skill: {{skill}})
 - Difficulty: DC {{dc}}
 - Result: {{outcome}}, by a margin of {{margin}} (narrow: {{was_close}})
-- Natural die: {{natural}}
+- Natural die: {{natural}} (automatic failure, no roll made: {{automatic_failure}})
 - Engine summary: {{fact_summary}}
 
 Scene: {{context}}`,
@@ -473,6 +517,7 @@ var TemperatureSettings = map[string]float64{
 	// feeds itself, so drift compounds.
 	"history_summary":       0.2,
 	"action_narration":      0.7,
+	"spell_narration":       0.7,
 	"check_narration":       0.6,
 	"combat_resolution":     0.3, // Consistent, predictable
 	"narrative_description": 0.7, // Creative

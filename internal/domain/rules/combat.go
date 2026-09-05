@@ -14,11 +14,10 @@ func (e *Engine) Move(c *models.Combatant, feet int) error {
 	if feet <= 0 {
 		return models.Invalid("movement must be positive")
 	}
-	if c.Status == models.CombatantDead || c.IsDown() {
-		return models.Invalid("%s cannot move", c.Name)
-	}
-	if c.HasCondition(models.ConditionGrappled) || c.HasCondition(models.ConditionRestrained) {
-		return models.Invalid("%s is held fast and cannot move", c.Name)
+	// The rule lives on the model so this engine and the turn service cannot
+	// drift apart about what "restrained" means.
+	if ok, reason := c.CanMove(); !ok {
+		return models.Invalid("%s", reason)
 	}
 	if feet > c.MovementRemaining {
 		return models.Invalid("%s has %d feet of movement left, not %d", c.Name, c.MovementRemaining, feet)

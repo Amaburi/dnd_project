@@ -16,6 +16,7 @@ package turn
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -32,9 +33,15 @@ import (
 // the orchestration is the part most worth testing and the part hardest to
 // reach through Mongo.
 type (
-	// CharacterStore reads the acting character.
+	// CharacterStore reads the acting character and writes back the resources
+	// a turn consumed.
+	//
+	// Spell slots are the only thing a turn currently spends, and writing them
+	// back is not optional: an unsaved slot is a spell the character can cast
+	// for ever.
 	CharacterStore interface {
 		GetCharacterByCharacterID(ctx context.Context, characterID string) (*models.Character, error)
+		UpdateSpellSlots(ctx context.Context, characterID string, spells models.Spells) error
 	}
 
 	// MonsterStore reads the creatures that can be targeted, and writes back
@@ -70,6 +77,7 @@ type (
 	Narrator interface {
 		ExtractIntent(ctx context.Context, req *ai.IntentRequest) (*ai.IntentResponse, error)
 		NarrateAction(ctx context.Context, req *ai.NarrationRequest) (*ai.NarrationResponse, error)
+		NarrateCast(ctx context.Context, req *ai.NarrationRequest) (*ai.NarrationResponse, error)
 		NarrateCheck(ctx context.Context, req *ai.NarrationRequest) (*ai.NarrationResponse, error)
 		GenerateNarrative(ctx context.Context, req *ai.NarrativeRequest) (*ai.NarrativeResponse, error)
 	}
@@ -138,6 +146,7 @@ type Result struct {
 	// Exactly one of these is set when the action was resolved mechanically.
 	Check  *rules.CheckResult  `json:"check,omitempty"`
 	Attack *rules.AttackResult `json:"attack,omitempty"`
+	Cast   *rules.CastResult   `json:"cast,omitempty"`
 
 	Narration string             `json:"narration"`
 	Event     *models.StoryEvent `json:"event,omitempty"`
@@ -181,6 +190,17 @@ func (s *Service) TakeAction(ctx context.Context, req *Request) (*Result, error)
 	}
 	if actor == nil {
 		return nil, models.NotFound("character")
+	}
+
+	// A dead character can do nothing at all -- not even roll a saving throw --
+	// so there is no sentence worth paying a provider to parse.
+	if actor.IsDead() {
+		return &Result{
+			Session:            session.SessionID,
+			NeedsClarification: true,
+			Clarification:      fmt.Sprintf("%s is dead and can no longer act.", actor.Name),
+			Elapsed:            time.Since(started),
+		}, nil
 	}
 
 	monsters, err := s.monsters.GetMonstersByCampaign(ctx, req.CampaignID)
@@ -233,6 +253,16 @@ func (s *Service) TakeAction(ctx context.Context, req *Request) (*Result, error)
 		return result, nil
 	}
 
+	// What the character may attempt depends on what they turned out to be
+	// attempting, so this waits for the parse. A refusal is the player's
+	// situation, not an error: nothing is resolved and nothing is logged.
+	if refusal := actionRefusal(actor, parsed.Intent.Action); refusal != "" {
+		result.NeedsClarification = true
+		result.Clarification = refusal
+		result.Elapsed = time.Since(started)
+		return result, nil
+	}
+
 	// --- resolve, persist, narrate ------------------------------------------
 	var (
 		narration *ai.NarrationResponse
@@ -253,6 +283,55 @@ func (s *Service) TakeAction(ctx context.Context, req *Request) (*Result, error)
 
 		narration, err = s.narrator.NarrateAction(ctx, &ai.NarrationRequest{
 			Facts: attack.Facts(), Context: sceneWith(req.Scene, recent), Style: req.Style,
+		})
+		if err != nil {
+			return nil, err
+		}
+
+	case models.IntentCastSpell:
+		cast, target, refusal, err := s.resolveCast(ctx, req, actor, parsed.Intent, byName)
+		if err != nil {
+			return nil, err
+		}
+		// A refusal is a fact about the situation -- no slots, a spell the
+		// character does not know -- not a server error. The player is told
+		// and nothing is logged, exactly as for an unreadable sentence.
+		if refusal != "" {
+			result.NeedsClarification = true
+			result.Clarification = refusal
+			result.Elapsed = time.Since(started)
+			return result, nil
+		}
+
+		// A utility spell has no roll for the engine to make. The slot is
+		// still spent; the effect is described rather than resolved.
+		if cast == nil {
+			eventType = "narrative"
+			prose, err := s.narrator.GenerateNarrative(ctx, &ai.NarrativeRequest{
+				PlayerInput:    req.Input,
+				Location:       orDefault(req.Scene, "unspecified"),
+				PartyStatus:    partyStatus(actor),
+				RecentEvents:   recent,
+				DMStyle:        orDefault(req.Style.NarrativeVoice, "collaborative"),
+				NarrativeVoice: orDefault(req.Style.NarrativeVoice, "third person, present tense"),
+				HumorLevel:     "occasional",
+				DetailLevel:    "moderate",
+			})
+			if err != nil {
+				return nil, err
+			}
+			narration = &ai.NarrationResponse{
+				Text: prose.Narrative, TokensUsed: prose.TokensUsed, Cost: prose.Cost,
+			}
+			break
+		}
+
+		result.Cast = cast
+		eventType = "combat_action"
+		changes = castChanges(cast, target)
+
+		narration, err = s.narrator.NarrateCast(ctx, &ai.NarrationRequest{
+			Facts: cast.Facts(), Context: sceneWith(req.Scene, recent), Style: req.Style,
 		})
 		if err != nil {
 			return nil, err
@@ -376,7 +455,7 @@ func (s *Service) resolveAttack(
 	combatant := monster.ToCombatant(monster.MonsterID)
 	combatant.HitPoints = monster.HitPoints
 
-	attack, err := s.engine.WeaponAttack(actor, weapon, &combatant, models.RollNormal)
+	attack, err := s.engine.WeaponAttack(actor, weapon, &combatant, intent.Advantage.Mode())
 	if err != nil {
 		return nil, nil, err
 	}
@@ -390,29 +469,132 @@ func (s *Service) resolveAttack(
 }
 
 // resolveCheck runs a skill check or saving throw.
+// resolveCast turns a parsed cast into an engine result.
+//
+// It returns (nil, nil, "", nil) for a utility spell, whose effect the narrator
+// describes because there is nothing to roll, and a non-empty refusal for
+// anything the situation forbids -- an unknown spell, no slots left, a slot too
+// small. A refusal is not an error: it is something the player can fix, and
+// turning it into a 500 would lose the turn instead of explaining it.
+func (s *Service) resolveCast(
+	ctx context.Context,
+	req *Request,
+	actor *models.Character,
+	intent models.Intent,
+	byName map[string]*models.Monster,
+) (*rules.CastResult, *models.Monster, string, error) {
+	def, ok := models.SpellByName(intent.Spell)
+	if !ok {
+		return nil, nil, fmt.Sprintf(
+			"I do not have rules for %q. Which spell is it, or would you rather describe what you do?",
+			intent.Spell), nil
+	}
+
+	// An omitted slot level means the spell's own level, never zero: casting a
+	// levelled spell "at level 0" would make it free.
+	slotLevel := intent.SlotLevel
+	if slotLevel < def.Level {
+		slotLevel = def.Level
+	}
+	if err := def.ValidateSlot(slotLevel); err != nil {
+		return nil, nil, err.Error(), nil
+	}
+	if slotLevel > 0 && actor.Spells.AvailableSlots(slotLevel) < 1 {
+		return nil, nil, fmt.Sprintf(
+			"%s has no level %d spell slots left. Cast it from a higher slot, or do something else?",
+			actor.Name, slotLevel), nil
+	}
+
+	// A utility spell still costs its slot; only the description is the
+	// narrator's business.
+	if def.Resolution == models.SpellResolutionUtility {
+		if slotLevel > 0 {
+			if err := actor.Spells.ExpendSlot(slotLevel); err != nil {
+				return nil, nil, err.Error(), nil
+			}
+			if err := s.saveSpells(ctx, req, actor); err != nil {
+				return nil, nil, "", err
+			}
+		}
+		return nil, nil, "", nil
+	}
+
+	monster, ok := byName[strings.ToLower(intent.Target)]
+	if !ok {
+		return nil, nil, fmt.Sprintf(
+			"%s needs a target. Who is it aimed at?", def.Name), nil
+	}
+
+	combatant := monster.ToCombatant(monster.MonsterID)
+	combatant.HitPoints = monster.HitPoints
+
+	var (
+		cast rules.CastResult
+		err  error
+	)
+	if def.Resolution == models.SpellResolutionSave {
+		// The target rolls its own save, from its own statblock.
+		cast, err = s.engine.CastSpellVersusSave(actor, def, slotLevel, &combatant,
+			monster.SavingThrowModifier(def.SaveAbility))
+	} else {
+		cast, err = s.engine.CastSpell(actor, def, slotLevel, &combatant, intent.Advantage.Mode())
+	}
+	if err != nil {
+		// The engine refuses what the rules forbid. That is the player's
+		// situation, not a fault.
+		if errors.Is(err, models.ErrValidation) {
+			return nil, nil, err.Error(), nil
+		}
+		return nil, nil, "", err
+	}
+
+	monster.HitPoints = combatant.HitPoints
+	if err := s.monsters.UpdateHitPoints(ctx, req.CampaignID, monster.MonsterID, monster.HitPoints); err != nil {
+		return nil, nil, "", err
+	}
+	// The slot is gone whether or not the spell landed, so it is written back
+	// before anything else can fail.
+	if slotLevel > 0 {
+		if err := s.saveSpells(ctx, req, actor); err != nil {
+			return nil, nil, "", err
+		}
+	}
+
+	return &cast, monster, "", nil
+}
+
+// saveSpells persists the caster's slots.
+func (s *Service) saveSpells(ctx context.Context, req *Request, actor *models.Character) error {
+	return s.characters.UpdateSpellSlots(ctx, req.CharacterID, actor.Spells)
+}
+
 func (s *Service) resolveCheck(actor *models.Character, intent models.Intent) rules.CheckResult {
 	dc := intent.SuggestedDC
 	if dc == 0 {
 		dc = models.DifficultyClasses["medium"]
 	}
 
+	// The engine folds in everything it can derive from the character; this is
+	// only the situational half the parser read from the sentence.
+	situational := intent.Advantage.Mode()
+
 	if intent.Action == models.IntentSavingThrow {
 		ability := intent.Ability
 		if !ability.Valid() {
 			ability = models.AbilityConstitution
 		}
-		return s.engine.SavingThrow(actor, ability, dc, models.RollNormal)
+		return s.engine.SavingThrow(actor, ability, dc, situational)
 	}
 
 	if intent.Skill.Valid() {
-		return s.engine.SkillCheck(actor, intent.Skill, dc, models.RollNormal)
+		return s.engine.SkillCheck(actor, intent.Skill, dc, situational)
 	}
 
 	ability := intent.Ability
 	if !ability.Valid() {
 		ability = models.AbilityDexterity
 	}
-	return s.engine.AbilityCheck(actor, ability, dc, models.RollNormal)
+	return s.engine.AbilityCheck(actor, ability, dc, situational)
 }
 
 // weaponFor resolves the parser's weapon name to an item the character holds.
@@ -476,6 +658,60 @@ func attackChanges(attack *rules.AttackResult, target *models.Monster) models.Ga
 			Amount:      -attack.Damage.Dealt,
 			NewHP:       target.HitPoints.Current,
 		}}
+	}
+	return changes
+}
+
+// actionRefusal reports why the character may not do what they just tried,
+// or "" if they may.
+//
+// The three capabilities are kept apart because 5e keeps them apart: an
+// incapacitated character can still speak, a grappled one can still swing, and
+// a saving throw is not an action at all -- an unconscious creature still makes
+// them, and that is the whole of a dying character's turn.
+func actionRefusal(actor *models.Character, action models.IntentAction) string {
+	var (
+		allowed bool
+		reason  string
+	)
+
+	switch action {
+	case models.IntentSavingThrow, models.IntentUnclear:
+		return ""
+	case models.IntentTalk:
+		allowed, reason = actor.CanSpeak()
+	case models.IntentMove:
+		allowed, reason = actor.CanMove()
+	default:
+		allowed, reason = actor.CanAct()
+	}
+
+	if allowed {
+		return ""
+	}
+	return reason
+}
+
+func castChanges(cast *rules.CastResult, target *models.Monster) models.GameStateChanges {
+	changes := models.GameStateChanges{
+		CharactersInvolved: []string{cast.Caster, cast.Target},
+	}
+	if cast.Damage != nil && cast.Damage.Dealt > 0 {
+		changes.HPChanges = []models.HPChange{{
+			CharacterID: target.MonsterID,
+			Amount:      -cast.Damage.Dealt,
+			NewHP:       target.HitPoints.Current,
+		}}
+	}
+	if cast.Healing > 0 {
+		changes.HPChanges = append(changes.HPChanges, models.HPChange{
+			CharacterID: target.MonsterID,
+			Amount:      cast.Healing,
+			NewHP:       target.HitPoints.Current,
+		})
+	}
+	if cast.ConditionApplied {
+		changes.ConditionsApplied = []models.Condition{cast.Condition}
 	}
 	return changes
 }

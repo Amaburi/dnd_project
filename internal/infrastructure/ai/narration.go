@@ -107,6 +107,13 @@ func (s *Service) NarrateAction(ctx context.Context, req *NarrationRequest) (*Na
 	return s.narrate(ctx, "action_narration", req, 300)
 }
 
+// NarrateCast describes a spell the engine has already resolved.
+//
+// Pass rules.CastResult.Facts() straight through.
+func (s *Service) NarrateCast(ctx context.Context, req *NarrationRequest) (*NarrationResponse, error) {
+	return s.narrate(ctx, "spell_narration", req, 300)
+}
+
 // NarrateCheck describes an ability check, skill check or saving throw the
 // engine has already resolved.
 //

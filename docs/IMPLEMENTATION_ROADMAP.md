@@ -362,7 +362,10 @@ Implement full combat encounter management with AI integration.
 #### Week 14: Combat Actions
 - [x] Implement attack rolls
 - [x] Add damage calculation
-- [x] Create spell casting in combat
+- [x] Create spell casting in combat  (this was marked done while only the engine primitives
+      existed: there was no spell catalogue, so nothing knew what a spell *did*, and the turn
+      service never called them. Closed for real 2026-09-05 -- `models/spells_srd.go`,
+      `rules/spellcasting.go`, and `IntentCastSpell` wired into `turn.TakeAction`.)
 - [x] Implement conditions/effects
 - [x] Add movement mechanics
 
