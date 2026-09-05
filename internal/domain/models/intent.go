@@ -24,6 +24,10 @@ const (
 	IntentMove        IntentAction = "move"
 	IntentTalk        IntentAction = "talk"
 
+	// IntentInteract is doing something to a thing in the room -- searching a
+	// desk, opening a chest, pulling a lever.
+	IntentInteract IntentAction = "interact"
+
 	// IntentNarrative covers anything with no mechanical consequence -- looking
 	// around, describing a gesture. It needs narration, not resolution.
 	IntentNarrative IntentAction = "narrative"
@@ -36,7 +40,7 @@ const (
 // IntentActions lists every action an intent may name.
 var IntentActions = []IntentAction{
 	IntentAttack, IntentSkillCheck, IntentSavingThrow, IntentCastSpell,
-	IntentUseItem, IntentMove, IntentTalk, IntentNarrative, IntentUnclear,
+	IntentUseItem, IntentMove, IntentTalk, IntentInteract, IntentNarrative, IntentUnclear,
 }
 
 // Valid reports whether a is a recognised action.
@@ -53,7 +57,7 @@ func (a IntentAction) Valid() bool {
 // than only narration.
 func (a IntentAction) NeedsResolution() bool {
 	switch a {
-	case IntentAttack, IntentSkillCheck, IntentSavingThrow, IntentCastSpell:
+	case IntentAttack, IntentSkillCheck, IntentSavingThrow, IntentCastSpell, IntentInteract:
 		return true
 	}
 	return false
@@ -94,6 +98,16 @@ type Intent struct {
 	// exhaustion) is derived by the engine instead, and this only combines with
 	// it -- advantage and disadvantage never stack, and one of each cancels.
 	Advantage AdvantageReason `json:"advantage,omitempty"`
+
+	// Interaction is what the player is doing to the thing named in Target,
+	// from the closed list the object itself supports.
+	Interaction InteractionKind `json:"interaction,omitempty"`
+
+	// NPCOutcome is what the party did to the NPC they are talking to, from a
+	// closed list. Disposition is a mechanical value, so "the innkeeper now
+	// likes you more" is a classification the parser makes, never a number it
+	// invents -- the table decides the number.
+	NPCOutcome InteractionOutcome `json:"npc_outcome,omitempty"`
 
 	// SlotLevel is the spell slot the caster is spending. Zero means the
 	// spell's own level, never a free cast -- a levelled spell "at level 0"
@@ -197,12 +211,27 @@ type ActionOptions struct {
 	Spells  []string `json:"spells"`
 	Items   []string `json:"items"`
 	Targets []string `json:"targets"`
+
+	// NPCs are the people present who can be spoken to. Separate from Targets
+	// because you attack a creature and you talk to a person, and a parser
+	// offered one closed list for both will eventually confuse them.
+	NPCs []string `json:"npcs"`
+
+	// Interactables and Exits are what is in the room. Offered as closed lists
+	// for the same reason weapons are: without them the parser invents
+	// furniture, and nothing can act on furniture that does not exist.
+	Interactables []string `json:"interactables"`
+	Exits         []string `json:"exits"`
 }
 
 // ActionOptionsFor builds the option list from a character sheet and the
 // creatures currently in play.
-func ActionOptionsFor(c *Character, targets []string) ActionOptions {
-	opts := ActionOptions{Actor: c.Name, Targets: append([]string(nil), targets...)}
+func ActionOptionsFor(c *Character, targets []string, npcs ...string) ActionOptions {
+	opts := ActionOptions{
+		Actor:   c.Name,
+		Targets: append([]string(nil), targets...),
+		NPCs:    append([]string(nil), npcs...),
+	}
 
 	// Every skill is available; proficiency only changes the modifier.
 	opts.Skills = append(opts.Skills, Skills...)
@@ -250,6 +279,9 @@ func (o ActionOptions) Prompt() string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "Actor: %s\n", o.Actor)
 	fmt.Fprintf(&b, "Targets in play: %s\n", listOrNone(o.Targets))
+	fmt.Fprintf(&b, "People present to talk to: %s\n", listOrNone(o.NPCs))
+	fmt.Fprintf(&b, "Things here to interact with: %s\n", listOrNone(o.Interactables))
+	fmt.Fprintf(&b, "Ways out: %s\n", listOrNone(o.Exits))
 	fmt.Fprintf(&b, "Weapons carried: %s\n", listOrNone(o.Weapons))
 	fmt.Fprintf(&b, "Spells known: %s\n", listOrNone(o.Spells))
 	fmt.Fprintf(&b, "Items carried: %s\n", listOrNone(o.Items))
@@ -297,6 +329,16 @@ func (i *Intent) Normalise() {
 		i.Advantage = ReasonNone
 	}
 
+	i.Interaction = InteractionKind(slug(string(i.Interaction)))
+	if i.Interaction != "" && !i.Interaction.Valid() {
+		i.Interaction = ""
+	}
+
+	i.NPCOutcome = InteractionOutcome(slug(string(i.NPCOutcome)))
+	if !i.NPCOutcome.Valid() {
+		i.NPCOutcome = OutcomeNone
+	}
+
 	if i.SlotLevel < 0 {
 		i.SlotLevel = 0
 	}
@@ -322,6 +364,9 @@ func (i Intent) Validate(opts ActionOptions) error {
 	}
 	if !i.Advantage.Valid() {
 		problems = append(problems, fmt.Sprintf("unknown advantage reason %q", i.Advantage))
+	}
+	if !i.NPCOutcome.Valid() {
+		problems = append(problems, fmt.Sprintf("unknown npc outcome %q", i.NPCOutcome))
 	}
 
 	switch i.Action {
@@ -359,6 +404,20 @@ func (i Intent) Validate(opts ActionOptions) error {
 			problems = append(problems, "using an item needs an item")
 		} else if len(opts.Items) > 0 && !containsFold(opts.Items, i.Item) {
 			problems = append(problems, fmt.Sprintf("%s is not carrying %q", opts.Actor, i.Item))
+		}
+
+	case IntentTalk:
+		// An unnamed listener is fine -- calling out to an empty room is still
+		// talking -- but a named one must be someone who is actually here.
+		if i.Target != "" && len(opts.NPCs) > 0 && !containsFold(opts.NPCs, i.Target) {
+			problems = append(problems, fmt.Sprintf("%q is not here to talk to", i.Target))
+		}
+
+	case IntentInteract:
+		if i.Target == "" {
+			problems = append(problems, "interacting needs something to interact with")
+		} else if len(opts.Interactables) > 0 && !containsFold(opts.Interactables, i.Target) {
+			problems = append(problems, fmt.Sprintf("there is no %q here", i.Target))
 		}
 
 	case IntentUnclear:

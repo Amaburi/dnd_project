@@ -26,6 +26,21 @@ func (c *Client) CreateIndexes(ctx context.Context) error {
 		return fmt.Errorf("failed to create monster indexes: %w", err)
 	}
 
+	// NPC indexes
+	if err := c.createNPCIndexes(ctx); err != nil {
+		return fmt.Errorf("failed to create npc indexes: %w", err)
+	}
+
+	// Plot thread and consequence indexes
+	if err := c.createStoryIndexes(ctx); err != nil {
+		return fmt.Errorf("failed to create story indexes: %w", err)
+	}
+
+	// Location indexes
+	if err := c.createLocationIndexes(ctx); err != nil {
+		return fmt.Errorf("failed to create location indexes: %w", err)
+	}
+
 	// Sessions indexes
 	if err := c.createSessionIndexes(ctx); err != nil {
 		return fmt.Errorf("failed to create session indexes: %w", err)
@@ -110,6 +125,87 @@ func (c *Client) createMonsterIndexes(ctx context.Context) error {
 	}
 
 	_, err := coll.Indexes().CreateMany(ctx, indexes)
+	return err
+}
+
+func (c *Client) createNPCIndexes(ctx context.Context) error {
+	coll := c.Database().Collection(string(NPCs))
+
+	indexes := []mongo.IndexModel{
+		{
+			Keys:    bson.D{{Key: "npc_id", Value: 1}},
+			Options: options.Index().SetUnique(true),
+		},
+		{
+			Keys: bson.D{{Key: "campaign_id", Value: 1}},
+		},
+		{
+			// Names are how a player refers to an NPC ("I talk to Toblen"), so
+			// the lookup that matters most is by campaign and name.
+			Keys: bson.D{{Key: "campaign_id", Value: 1}, {Key: "name", Value: 1}},
+		},
+	}
+
+	_, err := coll.Indexes().CreateMany(ctx, indexes)
+	return err
+}
+
+func (c *Client) createStoryIndexes(ctx context.Context) error {
+	threads := c.Database().Collection(string(PlotThreads))
+	if _, err := threads.Indexes().CreateMany(ctx, []mongo.IndexModel{
+		{
+			Keys:    bson.D{{Key: "thread_id", Value: 1}},
+			Options: options.Index().SetUnique(true),
+		},
+		{
+			// The query that matters is "what is still open in this campaign",
+			// which every prompt runs.
+			Keys: bson.D{{Key: "campaign_id", Value: 1}, {Key: "status", Value: 1}},
+		},
+	}); err != nil {
+		return err
+	}
+
+	consequences := c.Database().Collection(string(Consequences))
+	if _, err := consequences.Indexes().CreateMany(ctx, []mongo.IndexModel{
+		{
+			Keys:    bson.D{{Key: "consequence_id", Value: 1}},
+			Options: options.Index().SetUnique(true),
+		},
+		{
+			Keys: bson.D{{Key: "campaign_id", Value: 1}, {Key: "status", Value: 1}},
+		},
+	}); err != nil {
+		return err
+	}
+
+	arcs := c.Database().Collection(string(StoryArcs))
+	_, err := arcs.Indexes().CreateMany(ctx, []mongo.IndexModel{
+		{
+			Keys:    bson.D{{Key: "arc_id", Value: 1}},
+			Options: options.Index().SetUnique(true),
+		},
+		{
+			// "which arc is running" on every prompt, then campaign order.
+			Keys: bson.D{{Key: "campaign_id", Value: 1}, {Key: "status", Value: 1}, {Key: "order", Value: 1}},
+		},
+	})
+	return err
+}
+
+func (c *Client) createLocationIndexes(ctx context.Context) error {
+	coll := c.Database().Collection(string(Locations))
+	_, err := coll.Indexes().CreateMany(ctx, []mongo.IndexModel{
+		{
+			Keys:    bson.D{{Key: "location_id", Value: 1}},
+			Options: options.Index().SetUnique(true),
+		},
+		{
+			// A session names where the party is by id or by name, so both are
+			// lookups that run on every turn.
+			Keys: bson.D{{Key: "campaign_id", Value: 1}, {Key: "name", Value: 1}},
+		},
+	})
 	return err
 }
 

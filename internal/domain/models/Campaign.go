@@ -20,7 +20,6 @@ type Campaign struct {
 	Status           string             `json:"status" bson:"status"`
 	CreatedBy        string             `json:"created_by" bson:"created_by"`
 	CurrentSessionID string             `json:"current_session_id" bson:"current_session_id"`
-	StoryProgress    StoryProgress      `json:"story_progress" bson:"story_progress"`
 	Summary          CampaignSummary    `json:"summary" bson:"summary"`
 	CreatedAt        time.Time          `json:"created_at" bson:"created_at"`
 	UpdatedAt        time.Time          `json:"updated_at" bson:"updated_at"`
@@ -63,12 +62,13 @@ type AIPersonality struct {
 	DetailLevel    string `json:"detail_level" bson:"detail_level"`
 }
 
-// StoryProgress tracks campaign story progression
-type StoryProgress struct {
-	MainQuestStage    int      `json:"main_quest_stage" bson:"main_quest_stage"`
-	CompletedArcs     []string `json:"completed_arcs" bson:"completed_arcs"`
-	ActivePlotThreads []string `json:"active_plot_threads" bson:"active_plot_threads"`
-}
+// StoryProgress used to hold ActivePlotThreads, MainQuestStage and
+// CompletedArcs, none of which were ever written.
+//
+// All three are gone. A bare string cannot be advanced or resolved, a counter
+// cannot say what the current act is about, and having two places that claim to
+// track one thing is the bug this project keeps finding. They are entities now:
+// see PlotThread, Consequence and StoryArc.
 
 // Coordinates represents a position in the game world
 type Coordinates struct {

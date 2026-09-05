@@ -233,24 +233,24 @@ Implement DeepSeek AI integration for narrative generation and DM functionality.
 - [x] Create action interpretation
 - [x] Add result narrative generation
 - [x] Implement style customization
-- [ ] Add narrative caching
+- [x] Add narrative caching  (`ai/cache.go`: keyed on the whole prompt, scene descriptions only, off by default)
 
 **Milestone**: AI generates compelling narratives
 
 #### Week 10: NPC System
 - [x] Create NPC model with personality
 - [x] Implement NPC dialogue generation
-- [ ] Add NPC memory/relationships
-- [ ] Implement NPC state tracking
+- [x] Add NPC memory/relationships  (`models/npc.go`: disposition, closed-list interaction outcomes, pruned-but-not-amnesiac memory; wired into `IntentTalk`)
+- [x] Implement NPC state tracking  (alive/dead/missing, location, times met, first met, last seen)
 - [ ] Create NPC appearance generation
 
 **Milestone**: NPCs feel alive with unique personalities
 
 #### Week 11: Story Adaptation
 - [ ] Implement dynamic story branches
-- [ ] Create consequence tracking
-- [ ] Add plot thread management
-- [ ] Implement story arc progression
+- [x] Create consequence tracking  (`models.Consequence`: pending until it lands, settled once, fed into the prompt)
+- [x] Add plot thread management  (`models.PlotThread`: closed status set, bounded beats, only live ones reach the prompt; `POST /story/review` writes them down automatically)
+- [x] Implement story arc progression  (`models.StoryArc`: stages for pacing, and completion checked against the arc's own plot threads)
 - [x] Add player choice tracking
 
 **Milestone**: Story adapts to player choices

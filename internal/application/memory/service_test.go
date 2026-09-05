@@ -292,3 +292,126 @@ func TestCompactWithoutTheCollaboratorsIsANoOp(t *testing.T) {
 		t.Errorf("Compact = (%v, %v), want (false, nil)", compacted, err)
 	}
 }
+
+type fakeStory struct {
+	arc          *models.StoryArc
+	threads      []*models.PlotThread
+	consequences []*models.Consequence
+}
+
+func (f *fakeStory) GetActiveArc(context.Context, string) (*models.StoryArc, error) {
+	return f.arc, nil
+}
+
+func (f *fakeStory) GetLiveThreads(context.Context, string) ([]*models.PlotThread, error) {
+	return f.threads, nil
+}
+
+func (f *fakeStory) GetPendingConsequences(context.Context, string) ([]*models.Consequence, error) {
+	return f.consequences, nil
+}
+
+// The payoff: threads the DM opened reach the prompt, so it stops dropping
+// them between sessions.
+func TestBuildIncludesOutstandingStory(t *testing.T) {
+	s := New(&fakeEvents{all: timedEvents(3)}, nil, nil)
+	s.Story = &fakeStory{
+		threads: []*models.PlotThread{{
+			ThreadID: "t1", CampaignID: "camp-1", Title: "The Redbrands hold Phandalin",
+			Status: models.ThreadOpen,
+		}},
+		consequences: []*models.Consequence{{
+			ConsequenceID: "c1", CampaignID: "camp-1",
+			Cause: "The party spared Klarg", Expected: "he comes looking for them",
+			Status: models.ConsequencePending,
+		}},
+	}
+
+	c, err := s.Build(context.Background(), "camp-1")
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+	block := c.Block()
+	for _, want := range []string{"Redbrands", "spared Klarg"} {
+		if !strings.Contains(block, want) {
+			t.Errorf("the block is missing %q:\n%s", want, block)
+		}
+	}
+}
+
+// With nothing tracking threads there is no claim to make. Asserting that
+// nothing is outstanding when nothing is watching would be a lie the DM acts
+// on -- it would happily close a storyline it never knew about.
+func TestBuildClaimsNothingAboutStoryWithoutAStore(t *testing.T) {
+	s := New(&fakeEvents{all: timedEvents(3)}, nil, nil)
+
+	c, err := s.Build(context.Background(), "camp-1")
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+	if c.Story != "" {
+		t.Errorf("a story block was produced with no store: %q", c.Story)
+	}
+	if strings.Contains(c.Block(), "no open plot threads") {
+		t.Error("the block claims nothing is outstanding when nothing is tracking it")
+	}
+}
+
+// An empty store is different: it genuinely knows there is nothing pending.
+func TestAnEmptyStoryStoreSaysNothingRatherThanNoise(t *testing.T) {
+	s := New(&fakeEvents{all: timedEvents(3)}, nil, nil)
+	s.Story = &fakeStory{}
+
+	c, err := s.Build(context.Background(), "camp-1")
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+	// Nothing outstanding costs no tokens: there is no obligation to report.
+	if c.Story != "" {
+		t.Errorf("an empty store produced %q", c.Story)
+	}
+}
+
+// Pacing is what an AI DM is worst at unaided: without knowing which act it is
+// in, every scene is pitched the same way and a climax reads like a stroll.
+func TestBuildIncludesTheCurrentArc(t *testing.T) {
+	s := New(&fakeEvents{all: timedEvents(3)}, nil, nil)
+	s.Story = &fakeStory{
+		arc: &models.StoryArc{
+			ArcID: "a1", CampaignID: "camp-1", Title: "Phandalin",
+			Status: models.ArcActive, Stage: models.ArcClimax,
+			Premise: "The town is under the Redbrands' thumb.",
+		},
+		threads: []*models.PlotThread{{
+			ThreadID: "t1", CampaignID: "camp-1", Title: "The Redbrands hold Phandalin",
+			Status: models.ThreadOpen,
+		}},
+	}
+
+	c, err := s.Build(context.Background(), "camp-1")
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+	block := c.Block()
+	for _, want := range []string{"Phandalin", "climax"} {
+		if !strings.Contains(block, want) {
+			t.Errorf("the block is missing %q:\n%s", want, block)
+		}
+	}
+}
+
+// Between chapters is a real state and has to read as one, not as silence.
+func TestNoActiveArcSaysSoRatherThanNothing(t *testing.T) {
+	s := New(&fakeEvents{all: timedEvents(3)}, nil, nil)
+	s.Story = &fakeStory{threads: []*models.PlotThread{{
+		ThreadID: "t1", CampaignID: "camp-1", Title: "A loose end", Status: models.ThreadOpen,
+	}}}
+
+	c, err := s.Build(context.Background(), "camp-1")
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+	if !strings.Contains(c.Block(), "between chapters") {
+		t.Errorf("the block does not say the campaign is between arcs:\n%s", c.Block())
+	}
+}

@@ -11,6 +11,11 @@ OpenAI-compatible AI provider (Groq by default).
 - 👥 **Character Management**: Full character sheet support
 - 📖 **Story Tracking**: Campaign narrative and session history
 - 💾 **MongoDB Storage**: Persistent campaign data
+- 🕯️ **A world to touch**: rooms with searchable, lockable, hidden things — and lighting that matters
+- 💸 **Scene caching**: walk back into a described room for free
+- 📖 **Story arcs**: the DM knows which act it is in, and an arc cannot end with threads dangling
+- 🧵 **Plot threads & consequences**: the DM stops dropping storylines it opened
+- 🧑 **NPCs remember you**: attitude, memory of what you did, and dialogue that reflects both
 - 🩸 **Monsters fight back**: `POST /encounters/:id/resolve-turn` plays a monster's turn
 - 🎯 **Conditions that bite**: advantage from a helpless target, auto-crits, auto-failed saves
 - ✨ **Spellcasting**: 85 SRD spells with real mechanics -- cantrip scaling, upcasting, saves, conditions
@@ -130,6 +135,68 @@ rate_limit:
 - `GET /api/v1/campaigns/:id/monsters/:monster_id` - Get statblock
 - `PUT /api/v1/campaigns/:id/monsters/:monster_id` - Update statblock
 - `DELETE /api/v1/campaigns/:id/monsters/:monster_id` - Delete statblock
+
+### The world
+
+Places, and the things in them a player can act on. Without these the DM narrates furniture
+that nothing can touch.
+
+- `POST /api/v1/campaigns/:id/locations` - Create a place with `interactables` and `exits`
+- `GET  /api/v1/campaigns/:id/locations` - List them
+- `GET  /api/v1/campaigns/:id/locations/:location_id` - The DM's view, hidden things included
+- `PUT  /api/v1/campaigns/:id/locations/:location_id` - Edit it
+- `GET  /api/v1/campaigns/:id/scene` - **What the party can see** — exactly the block the DM
+  is given, with hidden things absent
+
+An interactable names what can be done to it (`search`, `open`, `unlock`, `pull`, `read`, …),
+optionally a `discover_dc` for something not yet noticed and an `unlock_dc` for a lock. Play
+drives it: `POST /campaigns/:id/actions` with "I search the wine rack" rolls the check,
+reveals what the roll beat, and saves it.
+
+`lighting` is `bright` / `dim` / `dark`. Dim is disadvantage on searching; dark blinds anyone
+without darkvision.
+
+### Story arcs
+
+Where the campaign is, which is what tells the DM whether to build tension or land it.
+
+- `POST /api/v1/campaigns/:id/arcs` - Create an arc (title, premise, order, thread_ids)
+- `GET  /api/v1/campaigns/:id/arcs` - List them in campaign order
+- `GET  /api/v1/campaigns/:id/arcs/:arc_id` - One arc, with how many of its storylines are settled
+- `POST /api/v1/campaigns/:id/arcs/:arc_id/advance` - setup → rising → climax → resolution
+- `POST /api/v1/campaigns/:id/arcs/:arc_id/complete` - `{"disposition": "completed"|"abandoned"|"activated", "how": "..."}`
+
+An arc **cannot be completed while the threads it names are still open** — the response says
+which ones to settle first.
+
+### Plot threads and consequences
+
+What the DM owes the party. These feed the prompt directly, so it stops dropping storylines
+it opened.
+
+- `POST /api/v1/campaigns/:id/threads` - Open a thread
+- `GET  /api/v1/campaigns/:id/threads?status=live` - What is still outstanding
+- `POST /api/v1/campaigns/:id/threads/:thread_id/advance` - Record a development
+- `POST /api/v1/campaigns/:id/threads/:thread_id/resolve` - `{"disposition": "resolved"|"abandoned"|"dormant"|"reopened", "how": "..."}`
+- `POST /api/v1/campaigns/:id/consequences` - Record something the party set in motion
+- `GET  /api/v1/campaigns/:id/consequences?status=pending` - What has not come back around
+- `POST /api/v1/campaigns/:id/consequences/:consequence_id/settle` - `{"disposition": "realised"|"averted"|"expired", "outcome": "..."}`
+- `POST /api/v1/campaigns/:id/story/review` - Read recent play and write down what it opened.
+  One provider call; run it at a session boundary, not every turn.
+
+### NPCs
+
+The people the party meets, and who remember them.
+
+- `POST /api/v1/campaigns/:id/npcs` - Create an NPC (name, role, personality, voice, knowledge)
+- `GET /api/v1/campaigns/:id/npcs` - List them, most recently seen first
+- `GET /api/v1/campaigns/:id/npcs/:npc_id` - One NPC, with their memory of the party
+- `PUT /api/v1/campaigns/:id/npcs/:npc_id` - Edit identity and personality
+- `DELETE /api/v1/campaigns/:id/npcs/:npc_id` - Remove one
+
+Disposition and memories are **earned in play, not editable**: talking to an NPC through
+`POST /campaigns/:id/actions` records the meeting, and what the party did moves their
+attitude. An NPC who has been threatened will remember it.
 
 ### Play
 - `POST /api/v1/campaigns/:id/actions` - One player turn: parse, resolve, persist, narrate, log

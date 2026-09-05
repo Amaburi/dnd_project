@@ -70,6 +70,8 @@ Reply with ONE JSON object and nothing else. No prose, no markdown fence, no exp
   "item": "exact name from Items carried, or empty",
   "slot_level": 0,
   "advantage": "" | "attacker_unseen" | "ally_helping" | "target_unseen" | "awkward_position",
+  "interaction": "" | "examine" | "search" | "open" | "close" | "unlock" | "move" | "climb" | "pull" | "push" | "read" | "take" | "break" | "listen" | "touch",
+  "npc_outcome": "" | "helped" | "kept_promise" | "paid_generously" | "saved_life" | "defended_them" | "insulted" | "threatened" | "stole_from" | "broke_promise" | "attacked" | "killed_someone_they_loved",
   "suggested_dc": 5 | 10 | 15 | 20 | 25 | 30,
   "confidence": "high" | "medium" | "low",
   "clarification": "a question to ask the player, required when action is unclear",
@@ -79,6 +81,13 @@ Reply with ONE JSON object and nothing else. No prose, no markdown fence, no exp
 ## Choosing the action
 
 - "attack" only when the player strikes a named creature that is in play.
+- "interact" when the player does something to a thing in the room. Set "target"
+  to a name from "Things here to interact with" and "interaction" to what they
+  are doing to it. Searching a desk, opening a chest, pulling a lever, reading
+  an inscription are all "interact", not "skill_check".
+- "talk" when the player addresses someone. Set "target" to a name from the
+  people present, or leave it empty if they are speaking to no one in
+  particular.
 - "cast_spell" when the player casts something on the Spells known list. Set
   "target" when the spell is aimed at a creature.
 - "skill_check" when success is uncertain and a listed skill decides it.
@@ -91,7 +100,9 @@ Reply with ONE JSON object and nothing else. No prose, no markdown fence, no exp
 ## Hard constraints
 
 - Names must be copied EXACTLY from the lists supplied. Never invent a weapon,
-  spell, item or target that is not listed.
+  spell, item, person or object that is not listed. If the player refers to
+  something that is not in the room, answer "unclear" and say so: the world
+  contains what it contains, and a thing nobody placed cannot be acted on.
 - If what the player describes is not available to them, answer "unclear" and
   say so in the clarification.
 - Difficulty: 5 very easy, 10 easy, 15 medium, 20 hard, 25 very hard,
@@ -103,6 +114,12 @@ Reply with ONE JSON object and nothing else. No prose, no markdown fence, no exp
   Conditions the engine already knows about (a prone, paralysed, restrained or
   unconscious target; the attacker being poisoned, frightened or blinded) are
   applied automatically. Do NOT name them here; doing so would count them twice.
+- "npc_outcome" is only for "talk", and only when the player's words clearly do
+  one of those things to the person they are addressing. Leave it "" for an
+  ordinary conversation -- most talking changes nothing. You are classifying
+  what they said, not judging whether the NPC should like them more: the amount
+  is fixed per outcome and is not yours to set. An unrecognised value is
+  discarded and moves nothing.
 - "slot_level" is only for cast_spell. Use 0 unless the player explicitly says
   they are casting at a higher level ("fireball at 5th level"); 0 means the
   spell's own level. Never raise it on the player's behalf -- spending a bigger
@@ -265,6 +282,42 @@ Events to fold in, oldest first:
 Produce one summary covering both, in order.`,
 		},
 
+		// story_review is bookkeeping, not narration. It reads what happened and
+		// writes down what is now outstanding; it must never add to the story,
+		// because anything it invents becomes a thread the DM is then obliged
+		// to pursue.
+		"story_review": {
+			System: `You keep the campaign log for a Dungeons & Dragons game. You are an archivist, not a storyteller.
+
+Read what happened and report what is now outstanding. The rules are absolute:
+- Never invent an event, name, place or motive that is not in the material you were given.
+- Do not continue the story, predict beyond an obvious consequence, or offer an opinion.
+- Do not repeat something already listed as open or pending. If it is already tracked, leave it alone.
+- A plot thread is an unresolved situation the party could act on. A single completed fight is not one.
+- A consequence is something the party CHOSE that has not come back around yet. A choice with no plausible comeback is not one.
+- Be sparing. Two or three of each at most, and none at all is a perfectly good answer.
+
+Reply with ONE JSON object and nothing else. No prose, no markdown fence.
+
+{
+  "new_threads": [{"title": "short name", "summary": "one sentence", "urgency": "background" | "active" | "pressing", "involves": ["names or places"]}],
+  "new_consequences": [{"cause": "what the party did", "expected": "what plausibly follows", "severity": "minor" | "moderate" | "major"}],
+  "advanced": [{"thread_id": "id from the open list", "summary": "what developed"}],
+  "resolved": [{"thread_id": "id from the open list", "how": "how it ended"}]
+}
+
+Use an empty array for anything with nothing to report. "advanced" and "resolved"
+may only name a thread_id from the open list -- never invent one.`,
+			User: `Already open, do not propose these again:
+{{open_threads}}
+
+Already pending, do not propose these again:
+{{pending_consequences}}
+
+What happened, oldest first:
+{{recent_events}}`,
+		},
+
 		"dm_base": {
 			System: `You are the narrator of a D&D 5th Edition game.
 
@@ -301,23 +354,31 @@ Current Context:
 		},
 
 		"npc_dialogue": {
-			System: `You are {{npc_name}}, a {{npc_race}} {{npc_class}}.
+			System: `You are {{npc_name}}, {{npc_role}} in {{npc_location}}. You are {{npc_race}}.
 
-**Personality Traits**: {{personality_traits}}
-**Background**: {{npc_background}}
-**Motivations**: {{motivations}}
-**Speech Pattern**: {{speech_pattern}}
-**Current Emotional State**: {{emotional_state}}
-**Knowledge**: {{knowledge}}
-**Relationship to Party**: {{relationship}}
+**Appearance**: {{appearance}}
+**Personality**: {{personality}}
+**Voice**: {{voice}}
+**Mannerisms**: {{mannerisms}}
+**What you want**: {{motivations}}
+**What you know**: {{knowledge}}
+
+## What you remember about these people
+
+{{npc_memory}}
+
+Your attitude towards them is {{attitude}}, and it should show. A hostile
+{{npc_name}} is curt, obstructive or afraid; a friendly one volunteers things
+they would not tell a stranger. Do not announce your attitude -- play it.
 
 Speak only as {{npc_name}}, in first person. Stay inside what this character
 would plausibly know: if asked something beyond your knowledge, say so in
-character rather than inventing world facts.
+character rather than inventing world facts. Never contradict what you
+remember above -- that is what actually happened.
 
-You are a person in the world, not its narrator. Do not describe the scene, do
-not resolve anything, do not speak for the players, and do not decide what
-their actions achieve.`,
+You are a person in the world, not its narrator.
+Do not describe the scene. Do not resolve anything. Do not speak for the
+players, and do not decide what their actions achieve.`,
 			User: `{{speaker_name}} says: "{{player_message}}"
 
 Context: {{context}}`,
@@ -515,7 +576,10 @@ var TemperatureSettings = map[string]float64{
 	"intent_extraction": 0.0,
 	// Compression runs cool: a creative recap is a wrong one, and this one
 	// feeds itself, so drift compounds.
-	"history_summary":       0.2,
+	"history_summary": 0.2,
+	// Bookkeeping, not invention: anything this pass makes up becomes a thread
+	// the DM is then obliged to pursue.
+	"story_review":          0.2,
 	"action_narration":      0.7,
 	"spell_narration":       0.7,
 	"check_narration":       0.6,

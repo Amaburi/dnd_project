@@ -41,6 +41,9 @@ type Server struct {
 	actionHandler    *handlers.ActionHandler
 	combatHandler    *handlers.CombatHandler
 	diceHandler      *handlers.DiceHandler
+	npcHandler       *handlers.NPCHandler
+	storyHandler     *handlers.StoryHandler
+	locationHandler  *handlers.LocationHandler
 }
 
 // NewServer creates a new API server
@@ -53,6 +56,9 @@ func NewServer(
 	actionHandler *handlers.ActionHandler,
 	combatHandler *handlers.CombatHandler,
 	diceHandler *handlers.DiceHandler,
+	npcHandler *handlers.NPCHandler,
+	storyHandler *handlers.StoryHandler,
+	locationHandler *handlers.LocationHandler,
 ) *Server {
 	// Honour the configured environment instead of pinning release mode, so
 	// app.debug actually changes anything.
@@ -80,6 +86,9 @@ func NewServer(
 		actionHandler:    actionHandler,
 		combatHandler:    combatHandler,
 		diceHandler:      diceHandler,
+		npcHandler:       npcHandler,
+		storyHandler:     storyHandler,
+		locationHandler:  locationHandler,
 	}
 
 	srv.setupMiddleware()
@@ -178,6 +187,47 @@ func (s *Server) setupRoutes() {
 		// turn, rather than only tracking whose turn it is.
 		v1.POST("/campaigns/:id/encounters/:encounter_id/resolve-turn", s.combatHandler.ResolveTurn)
 		v1.POST("/campaigns/:id/encounters/:encounter_id/end", s.combatHandler.EndEncounter)
+
+		// NPCs. The people the party meets, and who remember them.
+		v1.POST("/campaigns/:id/npcs", s.npcHandler.CreateNPC)
+		v1.GET("/campaigns/:id/npcs", s.npcHandler.ListNPCs)
+		v1.GET("/campaigns/:id/npcs/:npc_id", s.npcHandler.GetNPC)
+		v1.PUT("/campaigns/:id/npcs/:npc_id", s.npcHandler.UpdateNPC)
+		v1.DELETE("/campaigns/:id/npcs/:npc_id", s.npcHandler.DeleteNPC)
+
+		// Plot threads and consequences: the DM's outstanding work, which is
+		// what it otherwise forgets between sessions.
+		v1.POST("/campaigns/:id/threads", s.storyHandler.CreateThread)
+		v1.GET("/campaigns/:id/threads", s.storyHandler.ListThreads)
+		v1.GET("/campaigns/:id/threads/:thread_id", s.storyHandler.GetThread)
+		v1.POST("/campaigns/:id/threads/:thread_id/advance", s.storyHandler.AdvanceThread)
+		v1.POST("/campaigns/:id/threads/:thread_id/resolve", s.storyHandler.ResolveThread)
+
+		v1.POST("/campaigns/:id/consequences", s.storyHandler.CreateConsequence)
+		v1.GET("/campaigns/:id/consequences", s.storyHandler.ListConsequences)
+		v1.POST("/campaigns/:id/consequences/:consequence_id/settle", s.storyHandler.SettleConsequence)
+
+		// Places, and the things in them a player can act on.
+		v1.POST("/campaigns/:id/locations", s.locationHandler.CreateLocation)
+		v1.GET("/campaigns/:id/locations", s.locationHandler.ListLocations)
+		v1.GET("/campaigns/:id/locations/:location_id", s.locationHandler.GetLocation)
+		v1.PUT("/campaigns/:id/locations/:location_id", s.locationHandler.UpdateLocation)
+
+		// What the party can see right now -- the same block the DM is given,
+		// so a UI shows exactly what the model was told and nothing more.
+		v1.GET("/campaigns/:id/scene", s.locationHandler.CurrentScene)
+
+		// Story arcs: where the campaign is, which is what tells the DM whether
+		// to build tension or land it.
+		v1.POST("/campaigns/:id/arcs", s.storyHandler.CreateArc)
+		v1.GET("/campaigns/:id/arcs", s.storyHandler.ListArcs)
+		v1.GET("/campaigns/:id/arcs/:arc_id", s.storyHandler.GetArc)
+		v1.POST("/campaigns/:id/arcs/:arc_id/advance", s.storyHandler.AdvanceArc)
+		v1.POST("/campaigns/:id/arcs/:arc_id/complete", s.storyHandler.CompleteArc)
+
+		// One pass over recent play that writes down what it opened. Run at a
+		// session boundary, not per turn.
+		v1.POST("/campaigns/:id/story/review", s.storyHandler.Review)
 
 		// Dice. Not campaign-scoped: a roll is not campaign state, and making
 		// the client name a campaign to roll a d20 would be ceremony for

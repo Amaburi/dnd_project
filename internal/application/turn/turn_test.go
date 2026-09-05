@@ -57,6 +57,42 @@ func (f *fakeSessions) GetActiveSession(context.Context, string) (*models.Sessio
 	return f.session, nil
 }
 
+type fakeNPCs struct {
+	npcs  map[string]*models.NPC
+	saved []*models.NPC
+}
+
+func (f *fakeNPCs) GetNPCsByCampaign(context.Context, string) ([]*models.NPC, error) {
+	out := make([]*models.NPC, 0, len(f.npcs))
+	for _, npc := range f.npcs {
+		out = append(out, npc)
+	}
+	return out, nil
+}
+
+func (f *fakeNPCs) GetNPCByName(_ context.Context, _, name string) (*models.NPC, error) {
+	return f.npcs[strings.ToLower(name)], nil
+}
+
+func (f *fakeNPCs) SaveMemory(_ context.Context, _ string, npc *models.NPC) error {
+	f.saved = append(f.saved, npc)
+	return nil
+}
+
+type fakePlaces struct {
+	location *models.Location
+	saved    []*models.Location
+}
+
+func (f *fakePlaces) GetCurrentLocation(context.Context, string) (*models.Location, error) {
+	return f.location, nil
+}
+
+func (f *fakePlaces) SaveLocation(_ context.Context, _ string, l *models.Location) error {
+	f.saved = append(f.saved, l)
+	return nil
+}
+
 type fakeEvents struct {
 	appended []*models.StoryEvent
 	history  []*models.StoryEvent
@@ -134,6 +170,8 @@ type harness struct {
 	service    *Service
 	monsters   *fakeMonsters
 	characters *fakeCharacters
+	npcs       *fakeNPCs
+	places     *fakePlaces
 	events     *fakeEvents
 	stub       *ai.StubClient
 }
@@ -153,12 +191,16 @@ func newHarness(t *testing.T, replies ...string) *harness {
 	}}
 
 	characters := &fakeCharacters{character: hero()}
+	npcs := &fakeNPCs{npcs: map[string]*models.NPC{}}
+	places := &fakePlaces{}
 	service := NewService(
 		characters, monsters, sessions, events,
 		narrator, rules.NewEngine(dice.NewSeeded(1337)),
 	)
+	service.NPCs = npcs
+	service.Places = places
 	return &harness{service: service, monsters: monsters, characters: characters,
-		events: events, stub: stub}
+		npcs: npcs, places: places, events: events, stub: stub}
 }
 
 func request(input string) *Request {
@@ -512,7 +554,7 @@ func TestTurnSendsTheRollingSummary(t *testing.T) {
 type staticMemory struct{ summary string }
 
 func (s staticMemory) Build(context.Context, string) (memory.Context, error) {
-	return memory.Assemble(s.summary, nil, memory.Budget{}), nil
+	return memory.Assemble(memory.Sources{Summary: s.summary}, memory.Budget{}), nil
 }
 
 type fakeCompactor struct {
@@ -1092,5 +1134,361 @@ func TestANonConcentrationSpellLeavesConcentrationAlone(t *testing.T) {
 	if h.characters.character.Spells.Concentrating.Spell != "Hold Person" {
 		t.Errorf("concentrating on %q, want the original Hold Person",
 			h.characters.character.Spells.Concentrating.Spell)
+	}
+}
+
+// --- NPCs --------------------------------------------------------------------
+
+func toblen() *models.NPC {
+	return &models.NPC{
+		NPCID: "npc1", CampaignID: "camp1", Name: "Toblen", Role: "innkeeper",
+		Status: models.NPCAlive, Personality: "anxious",
+	}
+}
+
+// The gap this closes: talking to someone produced generic narration and
+// nothing remembered it, so every NPC met the party for the first time, every
+// time. That is the single most immersion-breaking thing an AI DM can do.
+func TestTalkingToAnNPCUsesTheirMemory(t *testing.T) {
+	h := newHarness(t,
+		`{"action":"talk","target":"Toblen","confidence":"high"}`,
+		`"Back again! Sit, sit."`)
+	npc := toblen()
+	npc.Meet()
+	npc.Remember(models.NPCMemory{
+		Summary: "Thistle paid for a round", Actor: "Thistle", Outcome: models.OutcomeGenerous,
+	})
+	h.npcs.npcs["toblen"] = npc
+
+	result, err := h.service.TakeAction(context.Background(), request("I ask Toblen for news"))
+	if err != nil {
+		t.Fatalf("TakeAction: %v", err)
+	}
+	if result.NeedsClarification {
+		t.Fatalf("talking to a known NPC was refused: %q", result.Clarification)
+	}
+	if result.NPC == nil {
+		t.Fatal("the turn did not report which NPC was spoken to")
+	}
+	if result.NPC.Name != "Toblen" {
+		t.Errorf("spoke to %q", result.NPC.Name)
+	}
+	if !strings.Contains(h.stub.LastPrompt(), "Thistle paid for a round") {
+		t.Errorf("the NPC's memory never reached the prompt:\n%s", h.stub.LastPrompt())
+	}
+}
+
+// Meeting someone is itself recorded, or the second conversation still looks
+// like the first.
+func TestTalkingRecordsTheMeeting(t *testing.T) {
+	h := newHarness(t,
+		`{"action":"talk","target":"Toblen","confidence":"high"}`,
+		`"Can I help you?"`)
+	h.npcs.npcs["toblen"] = toblen()
+
+	if _, err := h.service.TakeAction(context.Background(), request("I greet Toblen")); err != nil {
+		t.Fatalf("TakeAction: %v", err)
+	}
+	if len(h.npcs.saved) != 1 {
+		t.Fatalf("saved the NPC %d times, want once", len(h.npcs.saved))
+	}
+	if h.npcs.saved[0].TimesMet != 1 {
+		t.Errorf("TimesMet = %d, want 1", h.npcs.saved[0].TimesMet)
+	}
+}
+
+// What the party did has to move the needle, from the closed list only.
+func TestAnInteractionOutcomeChangesDisposition(t *testing.T) {
+	h := newHarness(t,
+		`{"action":"talk","target":"Toblen","npc_outcome":"threatened","confidence":"high"}`,
+		`"All right, all right! Put it away."`)
+	h.npcs.npcs["toblen"] = toblen()
+
+	result, err := h.service.TakeAction(context.Background(), request("I lean on Toblen and mention my knife"))
+	if err != nil {
+		t.Fatalf("TakeAction: %v", err)
+	}
+	if result.NPC.Disposition >= 0 {
+		t.Errorf("disposition = %d, want it to have dropped", result.NPC.Disposition)
+	}
+	if result.NPC.Attitude() != models.AttitudeIndifferent && result.NPC.Attitude() != models.AttitudeHostile {
+		t.Errorf("attitude = %q after a threat", result.NPC.Attitude())
+	}
+	if len(h.npcs.saved[0].Memories) != 1 {
+		t.Fatalf("recorded %d memories", len(h.npcs.saved[0].Memories))
+	}
+}
+
+// An invented outcome must move nothing: disposition is a mechanical value and
+// a model should not be able to assert a number for it.
+func TestAnInventedOutcomeChangesNothing(t *testing.T) {
+	h := newHarness(t,
+		`{"action":"talk","target":"Toblen","npc_outcome":"gave_him_a_meaningful_look","confidence":"high"}`,
+		`"...Yes?"`)
+	h.npcs.npcs["toblen"] = toblen()
+
+	result, err := h.service.TakeAction(context.Background(), request("I look at Toblen"))
+	if err != nil {
+		t.Fatalf("an invented outcome should not fail the turn: %v", err)
+	}
+	if result.NPC.Disposition != 0 {
+		t.Errorf("disposition = %d, want it unmoved", result.NPC.Disposition)
+	}
+}
+
+// Talking to nobody in particular is still talking: it must not fail.
+func TestTalkingWithoutAnNPCStillWorks(t *testing.T) {
+	h := newHarness(t,
+		`{"action":"talk","confidence":"high"}`,
+		"Your voice carries across the empty cellar.")
+
+	result, err := h.service.TakeAction(context.Background(), request("I call out"))
+	if err != nil {
+		t.Fatalf("TakeAction: %v", err)
+	}
+	if result.NPC != nil {
+		t.Errorf("an NPC was invented: %+v", result.NPC)
+	}
+	if result.Narration == "" {
+		t.Error("talking to nobody produced no narration")
+	}
+}
+
+// The dead do not chat, and the refusal has to reach the player.
+func TestTalkingToADeadNPCIsRefused(t *testing.T) {
+	h := newHarness(t, `{"action":"talk","target":"Toblen","confidence":"high"}`, "unused")
+	dead := toblen()
+	dead.Status = models.NPCDead
+	h.npcs.npcs["toblen"] = dead
+
+	result, err := h.service.TakeAction(context.Background(), request("I ask Toblen for news"))
+	if err != nil {
+		t.Fatalf("TakeAction: %v", err)
+	}
+	if !result.NeedsClarification {
+		t.Error("a dead NPC held a conversation")
+	}
+	if !strings.Contains(strings.ToLower(result.Clarification), "dead") {
+		t.Errorf("the refusal does not explain why: %q", result.Clarification)
+	}
+}
+
+// An NPC the campaign does not have is a question, not a hallucination.
+func TestTalkingToAnUnknownNPCAsksRatherThanInvents(t *testing.T) {
+	h := newHarness(t,
+		`{"action":"talk","target":"Elminster","confidence":"high"}`,
+		"Nobody by that name is here.")
+
+	result, err := h.service.TakeAction(context.Background(), request("I ask Elminster for help"))
+	if err != nil {
+		t.Fatalf("TakeAction: %v", err)
+	}
+	// Nothing to speak as, so this falls through to plain narration rather
+	// than the model improvising a person the campaign has never heard of.
+	if result.NPC != nil {
+		t.Errorf("an unknown NPC was conjured: %+v", result.NPC)
+	}
+}
+
+// --- the world ---------------------------------------------------------------
+
+func cellar() *models.Location {
+	return &models.Location{
+		LocationID: "loc1", CampaignID: "camp1", Name: "The wine cellar",
+		Description: "Low vaults, racks of dusty bottles.",
+		Lighting:    models.LightingDim,
+		Interactables: []models.Interactable{
+			{Name: "wine rack", Description: "Bottles, most of them empty.",
+				Interactions: []models.InteractionKind{models.InteractSearch, models.InteractMove}},
+			{Name: "iron-bound chest", Description: "Squat and padlocked.",
+				Interactions: []models.InteractionKind{models.InteractOpen},
+				State:        models.StateLocked, UnlockDC: 15, UnlockSkill: models.SkillSleightOfHand},
+			{Name: "loose flagstone", Hidden: true, DiscoverDC: 12,
+				DiscoverSkill: models.SkillPerception, Reveals: "a cavity holding a leather satchel",
+				Interactions: []models.InteractionKind{models.InteractMove}},
+		},
+		Exits: []models.Exit{{Direction: "north", Description: "Stairs up"}},
+	}
+}
+
+// The gap this closes: the DM would narrate a chest and nothing recorded that
+// the chest existed, so the next turn there was nothing to open.
+func TestInteractingWithSomethingInTheRoom(t *testing.T) {
+	h := newHarness(t,
+		`{"action":"interact","target":"wine rack","interaction":"search","confidence":"high"}`,
+		"Dust, and the ghost of better vintages.")
+	h.places.location = cellar()
+
+	result, err := h.service.TakeAction(context.Background(), request("I search the wine rack"))
+	if err != nil {
+		t.Fatalf("TakeAction: %v", err)
+	}
+	if result.NeedsClarification {
+		t.Fatalf("interacting was refused: %q", result.Clarification)
+	}
+	if result.Interaction == nil {
+		t.Fatal("the interaction was not resolved")
+	}
+	if result.Interaction.Target != "wine rack" {
+		t.Errorf("target = %q", result.Interaction.Target)
+	}
+	// Searching is a check, so the engine decides whether it found anything.
+	if result.Check == nil {
+		t.Error("searching rolled nothing")
+	}
+}
+
+// The things in the room reach the parser as a closed list, the same way
+// weapons and spells do. Otherwise it invents furniture.
+func TestTheRoomsContentsReachTheParser(t *testing.T) {
+	h := newHarness(t, `{"action":"narrative","confidence":"high"}`, "You look about.")
+	h.places.location = cellar()
+
+	if _, err := h.service.TakeAction(context.Background(), request("I look around")); err != nil {
+		t.Fatalf("TakeAction: %v", err)
+	}
+	prompt := h.stub.Requests[0].Messages[1].Content
+	for _, want := range []string{"wine rack", "iron-bound chest", "north"} {
+		if !strings.Contains(prompt, want) {
+			t.Errorf("the parser was not offered %q:\n%s", want, prompt)
+		}
+	}
+	// A hidden thing is not offered, and is not in the prompt at all.
+	if strings.Contains(strings.ToLower(prompt), "flagstone") {
+		t.Errorf("the hidden flagstone leaked into the prompt:\n%s", prompt)
+	}
+}
+
+// A good search finds what its roll beats, and the engine decides -- not the
+// narrator. This is the whole point of keeping secrets out of the prompt.
+func TestASuccessfulSearchRevealsWhatItBeats(t *testing.T) {
+	h := newHarness(t,
+		`{"action":"interact","target":"wine rack","interaction":"search","confidence":"high"}`,
+		"Behind the rack, a flagstone sits proud of the floor.")
+	h.places.location = cellar()
+	// A natural 20 clears the flagstone's DC of 12 even at disadvantage.
+	h.service.engine = rules.NewEngine(dice.NewScripted(20, 20))
+
+	result, err := h.service.TakeAction(context.Background(), request("I search the wine rack"))
+	if err != nil {
+		t.Fatalf("TakeAction: %v", err)
+	}
+	if len(result.Interaction.Discovered) != 1 {
+		t.Fatalf("found %v, want the flagstone", result.Interaction.Discovered)
+	}
+	if result.Interaction.Discovered[0] != "loose flagstone" {
+		t.Errorf("found %q", result.Interaction.Discovered[0])
+	}
+	// The discovery has to be saved, or it is forgotten by the next turn.
+	if len(h.places.saved) == 0 {
+		t.Error("the discovery was never persisted")
+	}
+}
+
+// Dim light is disadvantage on looking for things. It is a rule, not mood.
+func TestDimLightHampersSearching(t *testing.T) {
+	h := newHarness(t,
+		`{"action":"interact","target":"wine rack","interaction":"search","confidence":"high"}`,
+		"You peer at the shelves.")
+	h.places.location = cellar()
+
+	result, err := h.service.TakeAction(context.Background(), request("I search the wine rack"))
+	if err != nil {
+		t.Fatalf("TakeAction: %v", err)
+	}
+	if len(result.Check.Roll.Rolls) != 2 {
+		t.Errorf("rolled %d dice, want two: dim light is disadvantage on Perception",
+			len(result.Check.Roll.Rolls))
+	}
+}
+
+// You cannot do to a thing what the thing does not do, and the refusal has to
+// reach the player rather than being narrated as if it worked.
+func TestAnImpossibleInteractionIsRefused(t *testing.T) {
+	h := newHarness(t,
+		`{"action":"interact","target":"wine rack","interaction":"open","confidence":"high"}`,
+		"unused")
+	h.places.location = cellar()
+
+	result, err := h.service.TakeAction(context.Background(), request("I open the wine rack"))
+	if err != nil {
+		t.Fatalf("TakeAction: %v", err)
+	}
+	if !result.NeedsClarification {
+		t.Error("a wine rack was opened")
+	}
+}
+
+// A locked chest stays shut and says why.
+func TestALockedThingSaysSo(t *testing.T) {
+	h := newHarness(t,
+		`{"action":"interact","target":"iron-bound chest","interaction":"open","confidence":"high"}`,
+		"unused")
+	h.places.location = cellar()
+
+	result, err := h.service.TakeAction(context.Background(), request("I open the chest"))
+	if err != nil {
+		t.Fatalf("TakeAction: %v", err)
+	}
+	if !result.NeedsClarification {
+		t.Fatal("a locked chest opened")
+	}
+	if !strings.Contains(result.Clarification, "locked") {
+		t.Errorf("the refusal does not say it is locked: %q", result.Clarification)
+	}
+}
+
+// Picking the lock is a check against the lock's own DC.
+func TestUnlockingRollsAgainstTheLock(t *testing.T) {
+	h := newHarness(t,
+		`{"action":"interact","target":"iron-bound chest","interaction":"unlock","confidence":"high"}`,
+		"The padlock gives with a click.")
+	h.places.location = cellar()
+	h.service.engine = rules.NewEngine(dice.NewScripted(20))
+
+	result, err := h.service.TakeAction(context.Background(), request("I pick the padlock"))
+	if err != nil {
+		t.Fatalf("TakeAction: %v", err)
+	}
+	if result.Check == nil {
+		t.Fatal("picking a lock rolled nothing")
+	}
+	if !result.Interaction.Succeeded {
+		t.Errorf("a natural 20 failed a DC 15 lock: %+v", result.Interaction)
+	}
+	if h.places.location.Interactables[1].State != models.StateUnlocked {
+		t.Errorf("the chest is still %q", h.places.location.Interactables[1].State)
+	}
+}
+
+// A thing that is not here is a question, not an improvisation.
+func TestInteractingWithSomethingThatIsNotThereAsks(t *testing.T) {
+	h := newHarness(t,
+		`{"action":"interact","target":"grand piano","interaction":"open","confidence":"high"}`,
+		"unused")
+	h.places.location = cellar()
+
+	result, err := h.service.TakeAction(context.Background(), request("I open the grand piano"))
+	if err != nil {
+		t.Fatalf("TakeAction: %v", err)
+	}
+	if !result.NeedsClarification {
+		t.Error("a piano was conjured into the cellar")
+	}
+}
+
+// With no location wired up the turn still works: it is simply a game without
+// scenery, which is what every campaign was before this existed.
+func TestInteractingWithoutALocationFallsBackToNarration(t *testing.T) {
+	h := newHarness(t,
+		`{"action":"interact","target":"a desk","interaction":"search","confidence":"high"}`,
+		"You rummage about.")
+
+	result, err := h.service.TakeAction(context.Background(), request("I search the desk"))
+	if err != nil {
+		t.Fatalf("TakeAction: %v", err)
+	}
+	if result.Narration == "" {
+		t.Error("no narration was produced")
 	}
 }

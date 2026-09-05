@@ -30,6 +30,9 @@ func TestRoutesRegisterWithoutConflict(t *testing.T) {
 		&handlers.ActionHandler{},
 		&handlers.CombatHandler{},
 		&handlers.DiceHandler{},
+		&handlers.NPCHandler{},
+		&handlers.StoryHandler{},
+		&handlers.LocationHandler{},
 	)
 
 	routes := srv.router.Routes()
@@ -109,6 +112,9 @@ func TestEveryAPIRouteIsVersioned(t *testing.T) {
 		&handlers.ActionHandler{},
 		&handlers.CombatHandler{},
 		&handlers.DiceHandler{},
+		&handlers.NPCHandler{},
+		&handlers.StoryHandler{},
+		&handlers.LocationHandler{},
 	)
 
 	for _, r := range srv.router.Routes() {

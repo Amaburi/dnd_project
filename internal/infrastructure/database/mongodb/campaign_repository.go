@@ -141,7 +141,6 @@ func (r *CampaignRepository) UpdateCampaign(ctx context.Context, campaign *model
 		"ai_personality":     campaign.AIPersonality,
 		"status":             campaign.Status,
 		"current_session_id": campaign.CurrentSessionID,
-		"story_progress":     campaign.StoryProgress,
 		"updated_at":         now,
 	}
 

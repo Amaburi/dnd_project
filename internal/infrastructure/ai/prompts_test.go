@@ -132,19 +132,21 @@ func TestBuildConversationInsertsHistoryBetweenSystemAndUser(t *testing.T) {
 	}
 
 	messages, err := pb.BuildConversation("npc_dialogue", map[string]string{
-		"npc_name":           "Garrick",
-		"npc_race":           "dwarf",
-		"npc_class":          "blacksmith",
-		"personality_traits": "gruff",
-		"npc_background":     "guild smith",
-		"motivations":        "coin",
-		"speech_pattern":     "clipped",
-		"emotional_state":    "wary",
-		"knowledge":          "local rumours",
-		"relationship":       "neutral",
-		"speaker_name":       "Thistle",
-		"player_message":     "Do you have a blade?",
-		"context":            "the forge",
+		"npc_name":       "Garrick",
+		"npc_race":       "dwarf",
+		"npc_role":       "blacksmith",
+		"npc_location":   "the forge",
+		"appearance":     "soot-stained, thick-armed",
+		"personality":    "gruff",
+		"voice":          "clipped",
+		"mannerisms":     "never stops working",
+		"motivations":    "coin",
+		"knowledge":      "local rumours",
+		"attitude":       "indifferent",
+		"npc_memory":     "You have met these people once before.",
+		"speaker_name":   "Thistle",
+		"player_message": "Do you have a blade?",
+		"context":        "the forge",
 	}, history)
 	if err != nil {
 		t.Fatalf("BuildConversation: %v", err)

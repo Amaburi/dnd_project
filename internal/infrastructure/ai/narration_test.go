@@ -222,7 +222,10 @@ func TestEveryTemplateHasACaller(t *testing.T) {
 			return err
 		},
 		"npc_dialogue": func() error {
-			_, err := service.GenerateNPCDialogue(ctx, &NPCDialogueRequest{NPCName: "Garrick"})
+			_, err := service.GenerateNPCDialogue(ctx, &NPCDialogueRequest{
+				NPC:         &models.NPC{Name: "Garrick", CampaignID: "c", Status: models.NPCAlive},
+				SpeakerName: "Thistle", PlayerMessage: "Hello.",
+			})
 			return err
 		},
 		"narrative_generation": func() error {
@@ -239,6 +242,12 @@ func TestEveryTemplateHasACaller(t *testing.T) {
 		},
 		"history_summary": func() error {
 			_, err := service.SummarizeHistory(ctx, "", []string{"They set out."})
+			return err
+		},
+		"story_review": func() error {
+			stub.Replies = []string{`{"new_threads":[],"new_consequences":[]}`}
+			stub.Requests = nil
+			_, err := service.ReviewStory(ctx, &StoryReviewRequest{RecentEvents: []string{"They arrived."}})
 			return err
 		},
 		"quest_generation": func() error {

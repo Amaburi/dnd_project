@@ -72,6 +72,12 @@ memory:
   compact_after: 40     # un-summarised events that trigger a compaction
   retain: 15            # events left verbatim after one
 
+  # Reuse of scene descriptions. Only an identical prompt hits, so a party
+  # walking back into a room they have had described is free, while anything
+  # that has changed is not. 0 disables it.
+  cache_size: 0
+  cache_ttl: "30m"
+
 # Logging Configuration
 logging:
   level: "debug"

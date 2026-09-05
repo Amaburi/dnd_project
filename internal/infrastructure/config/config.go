@@ -83,6 +83,15 @@ type MemoryConfig struct {
 	// Retain is how many stay verbatim after one.
 	CompactAfter int `mapstructure:"compact_after"`
 	Retain       int `mapstructure:"retain"`
+
+	// CacheSize is how many scene descriptions to keep for reuse, and CacheTTL
+	// is how long one stays fresh. 0 disables caching.
+	//
+	// Only scene descriptions are ever cached, and only when the prompt is
+	// byte-identical -- a changed fact changes the prompt, so a hit can never
+	// describe the wrong situation.
+	CacheSize int           `mapstructure:"cache_size"`
+	CacheTTL  time.Duration `mapstructure:"cache_ttl"`
 }
 
 // CORSConfig lists the browser origins allowed to call the API.
@@ -168,6 +177,8 @@ func Load() (*Config, error) {
 	v.SetDefault("memory.window", 60)
 	v.SetDefault("memory.compact_after", 40)
 	v.SetDefault("memory.retain", 15)
+	v.SetDefault("memory.cache_size", 0)
+	v.SetDefault("memory.cache_ttl", "30m")
 
 	// Read config file
 	if err := v.ReadInConfig(); err != nil {

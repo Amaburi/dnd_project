@@ -5,11 +5,14 @@ import (
 	"fmt"
 	"strings"
 	"time"
+
+	"github.com/dnd-campaign/manager/internal/domain/models"
 )
 
 // Service provides high-level AI operations
 type Service struct {
 	client        Client
+	cache         *narrativeCache
 	promptBuilder *PromptBuilder
 	config        ClientConfig
 }
@@ -41,7 +44,14 @@ type NarrativeRequest struct {
 
 // NarrativeResponse represents a narrative generation response
 type NarrativeResponse struct {
-	Narrative      string
+	Narrative string
+
+	// Cached reports that this came from a stored reply to the identical
+	// prompt, so it cost nothing. Reported rather than hidden: a campaign's
+	// spend should be auditable, and a hit that claimed a cost would inflate it
+	// with money nobody paid.
+	Cached bool
+
 	TokensUsed     int
 	Cost           float64
 	ProcessingTime time.Duration
@@ -77,40 +87,32 @@ func (s *Service) GenerateNarrative(ctx context.Context, req *NarrativeRequest) 
 		TopP:        Float(0.9),
 	}
 
-	// Call AI
-	resp, err := s.client.ChatCompletion(ctx, chatReq)
+	text, cached, usage, err := s.cachedCompletion(ctx, "dm_base", chatReq)
 	if err != nil {
 		return nil, fmt.Errorf("AI request failed: %w", err)
 	}
 
-	// Extract response
-	if len(resp.Choices) == 0 {
-		return nil, fmt.Errorf("no response from AI")
-	}
-
 	processingTime := time.Since(startTime)
-	cost := s.calculateCost(resp.Usage)
+	cost := s.calculateCost(usage)
 
 	return &NarrativeResponse{
-		Narrative:      resp.Choices[0].Message.Content,
-		TokensUsed:     resp.Usage.TotalTokens,
+		Narrative:      text,
+		Cached:         cached,
+		TokensUsed:     usage.TotalTokens,
 		Cost:           cost,
 		ProcessingTime: processingTime,
 	}, nil
 }
 
-// NPCDialogueRequest represents a request for NPC dialogue
+// NPCDialogueRequest represents a request for NPC dialogue.
+//
+// It takes the NPC itself rather than a dozen loose strings. The old shape made
+// every caller reinvent the character: the same innkeeper was a different person
+// in every scene and had never met the party before, because nothing carried
+// their memory from one conversation to the next.
 type NPCDialogueRequest struct {
-	NPCName             string
-	NPCRace             string
-	NPCClass            string
-	PersonalityTraits   string
-	Background          string
-	Motivations         string
-	SpeechPattern       string
-	EmotionalState      string
-	Knowledge           string
-	Relationship        string
+	NPC *models.NPC
+
 	SpeakerName         string
 	PlayerMessage       string
 	Context             string
@@ -129,21 +131,32 @@ type NPCDialogueResponse struct {
 func (s *Service) GenerateNPCDialogue(ctx context.Context, req *NPCDialogueRequest) (*NPCDialogueResponse, error) {
 	startTime := time.Now()
 
-	// Build prompt
+	// Speaking as nobody is the old bug in a new form: without an NPC the model
+	// would invent one, and invent its history along with it.
+	if req.NPC == nil {
+		return nil, fmt.Errorf("npc dialogue needs an NPC to speak as")
+	}
+	npc := req.NPC
+
 	variables := map[string]string{
-		"npc_name":           req.NPCName,
-		"npc_race":           req.NPCRace,
-		"npc_class":          req.NPCClass,
-		"personality_traits": req.PersonalityTraits,
-		"npc_background":     req.Background,
-		"motivations":        req.Motivations,
-		"speech_pattern":     req.SpeechPattern,
-		"emotional_state":    req.EmotionalState,
-		"knowledge":          req.Knowledge,
-		"relationship":       req.Relationship,
-		"speaker_name":       req.SpeakerName,
-		"player_message":     req.PlayerMessage,
-		"context":            req.Context,
+		"npc_name":     npc.Name,
+		"npc_race":     orPlaceholder(npc.Race, "unremarkable"),
+		"npc_role":     orPlaceholder(npc.Role, "a local"),
+		"npc_location": orPlaceholder(npc.Location, "here"),
+		"appearance":   orPlaceholder(npc.Appearance, "nothing that draws the eye"),
+		"personality":  orPlaceholder(npc.Personality, "plain-spoken and unhurried"),
+		"voice":        orPlaceholder(npc.Voice, "an ordinary speaking voice"),
+		"mannerisms":   orPlaceholder(npc.Mannerisms, "none worth noting"),
+		"motivations":  orPlaceholder(npc.Motivations, "getting through the day"),
+		"knowledge":    orPlaceholder(strings.Join(npc.Knowledge, "; "), "nothing beyond local gossip"),
+
+		// The memory block is the whole point of this type existing.
+		"attitude":   string(npc.Attitude()),
+		"npc_memory": npc.MemoryBlock(),
+
+		"speaker_name":   req.SpeakerName,
+		"player_message": req.PlayerMessage,
+		"context":        orPlaceholder(req.Context, "no additional context"),
 	}
 
 	messages, err := s.promptBuilder.BuildConversation("npc_dialogue", variables, req.ConversationHistory)

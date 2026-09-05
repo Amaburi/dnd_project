@@ -14,6 +14,11 @@ const (
 	Campaigns        CollectionName = "campaigns"
 	Characters       CollectionName = "characters"
 	Monsters         CollectionName = "monsters"
+	NPCs             CollectionName = "npcs"
+	PlotThreads      CollectionName = "plot_threads"
+	Consequences     CollectionName = "consequences"
+	StoryArcs        CollectionName = "story_arcs"
+	Locations        CollectionName = "locations"
 	Sessions         CollectionName = "sessions"
 	StoryEvents      CollectionName = "story_events"
 	CombatEncounters CollectionName = "combat_encounters"
@@ -26,6 +31,11 @@ func (c *Client) InitializeCollections(ctx context.Context) error {
 		Campaigns,
 		Characters,
 		Monsters,
+		NPCs,
+		PlotThreads,
+		Consequences,
+		StoryArcs,
+		Locations,
 		Sessions,
 		StoryEvents,
 		CombatEncounters,

@@ -20,11 +20,31 @@ type Budget struct {
 	MinRecent int
 }
 
+// Sources is everything a context can be assembled from.
+//
+// A struct rather than a parameter list because the parts are not
+// interchangeable strings and adding one should not silently reorder the rest.
+type Sources struct {
+	// Summary is the rolling recap of everything too old to send verbatim.
+	Summary string
+
+	// Story is the DM's outstanding work: open plot threads and consequences
+	// the party set in motion that have not come back around.
+	Story string
+
+	// Events are the recent story events, oldest first.
+	Events []*models.StoryEvent
+}
+
 // Context is the campaign memory handed to a prompt.
 type Context struct {
 	// Summary covers everything older than Recent. Empty means either nothing
 	// has been compacted yet or the summary did not fit.
 	Summary string `json:"summary,omitempty"`
+
+	// Story is the outstanding plot threads and pending consequences. Empty
+	// means there were none, or it did not fit.
+	Story string `json:"story,omitempty"`
 
 	// Recent holds the surviving events, oldest first.
 	Recent []*models.StoryEvent `json:"recent"`
@@ -72,21 +92,22 @@ func eventLine(e *models.StoryEvent) string {
 //
 // Immediate coherence outranks long-term memory, which outranks the middle of
 // the history -- the part a summary already covers.
-func Assemble(summary string, chronological []*models.StoryEvent, budget Budget) Context {
+func Assemble(src Sources, budget Budget) Context {
 	// Drop events that would render as a bare bullet before anything is
 	// counted, so they neither cost tokens nor reach the block.
-	usable := make([]*models.StoryEvent, 0, len(chronological))
-	for _, e := range chronological {
+	usable := make([]*models.StoryEvent, 0, len(src.Events))
+	for _, e := range src.Events {
 		if eventLine(e) != "" {
 			usable = append(usable, e)
 		}
 	}
 
 	c := Context{}
-	summary = strings.TrimSpace(summary)
+	summary := strings.TrimSpace(src.Summary)
+	story := strings.TrimSpace(src.Story)
 
 	if budget.MaxTokens <= 0 {
-		c.Summary = summary
+		c.Summary, c.Story = summary, story
 		c.Recent = usable
 		c.Tokens = EstimateTokens(c.Block())
 		return c
@@ -99,28 +120,42 @@ func Assemble(summary string, chronological []*models.StoryEvent, budget Budget)
 
 	// Step 1: the floor, unconditionally.
 	keep := usable[len(usable)-floor:]
-	spent := blockTokens("", keep, len(usable)-floor)
+	dropped := len(usable) - floor
+	spent := blockTokens(Context{Recent: keep, Dropped: dropped})
 
-	// Step 2: the summary, if the remaining budget covers it. An oversized
-	// summary is dropped whole rather than truncated: half a recap ending
-	// mid-sentence invites the model to complete the thought itself.
-	if summary != "" {
-		if withSummary := blockTokens(summary, keep, len(usable)-floor); withSummary <= budget.MaxTokens {
-			c.Summary = summary
-			spent = withSummary
+	// Step 2: the outstanding story. A thread the DM opened and forgot is a
+	// worse failure than a scene it cannot recall in detail, so this outranks
+	// both the summary and every older event.
+	if story != "" {
+		if cost := blockTokens(Context{Story: story, Recent: keep, Dropped: dropped}); cost <= budget.MaxTokens {
+			c.Story = story
+			spent = cost
 		} else {
 			c.Truncated = true
 		}
 	}
 
-	// Step 3: older events, newest first, while they fit.
+	// Step 3: the summary, if the remaining budget covers it. An oversized
+	// summary is dropped whole rather than truncated: half a recap ending
+	// mid-sentence invites the model to complete the thought itself.
+	if summary != "" {
+		candidate := Context{Summary: summary, Story: c.Story, Recent: keep, Dropped: dropped}
+		if cost := blockTokens(candidate); cost <= budget.MaxTokens {
+			c.Summary = summary
+			spent = cost
+		} else {
+			c.Truncated = true
+		}
+	}
+
+	// Step 4: older events, newest first, while they fit.
 	for i := len(usable) - floor - 1; i >= 0; i-- {
-		candidate := usable[i:]
-		cost := blockTokens(c.Summary, candidate, i)
+		candidate := Context{Summary: c.Summary, Story: c.Story, Recent: usable[i:], Dropped: i}
+		cost := blockTokens(candidate)
 		if cost > budget.MaxTokens {
 			break
 		}
-		keep, spent = candidate, cost
+		keep, spent = usable[i:], cost
 	}
 
 	c.Recent = keep
@@ -137,9 +172,7 @@ func Assemble(summary string, chronological []*models.StoryEvent, budget Budget)
 // block rather than summing the parts, so the headings, bullets and the
 // elision notice are counted too -- a budget built on an estimate of something
 // else is fiction.
-func blockTokens(summary string, events []*models.StoryEvent, dropped int) int {
-	return EstimateTokens(Context{Summary: summary, Recent: events, Dropped: dropped}.Block())
-}
+func blockTokens(c Context) int { return EstimateTokens(c.Block()) }
 
 // Block renders the memory as the prompt variable a template receives.
 func (c Context) Block() string {
@@ -148,6 +181,13 @@ func (c Context) Block() string {
 	if summary := strings.TrimSpace(c.Summary); summary != "" {
 		b.WriteString("The story so far:\n")
 		b.WriteString(summary)
+	}
+
+	if story := strings.TrimSpace(c.Story); story != "" {
+		if b.Len() > 0 {
+			b.WriteString("\n\n")
+		}
+		b.WriteString(story)
 	}
 
 	var lines []string

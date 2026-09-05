@@ -74,6 +74,9 @@ func newHarness(t *testing.T, replies ...string) *harness {
 	sessions := mongodb.NewSessionRepository(client)
 	events := mongodb.NewStoryEventRepository(client, sessions)
 	encounters := mongodb.NewEncounterRepository(client)
+	npcs := mongodb.NewNPCRepository(client)
+	story := mongodb.NewStoryRepository(client)
+	locations := mongodb.NewLocationRepository(client, sessions)
 
 	narrator, stub := ai.NewStubService(replies...)
 	roller := dice.NewSeeded(1337)
@@ -81,7 +84,7 @@ func newHarness(t *testing.T, replies ...string) *harness {
 
 	server := NewServer(
 		ServerConfig{Host: "127.0.0.1", Port: 0},
-		handlers.NewCampaignHandler(campaigns, characters, monsters, sessions, events, encounters),
+		handlers.NewCampaignHandler(campaigns, characters, monsters, npcs, story, locations, sessions, events, encounters),
 		handlers.NewCharacterHandler(characters, campaigns, roller),
 		handlers.NewMonsterHandler(monsters, campaigns),
 		handlers.NewSessionHandler(sessions, events, campaigns),
@@ -89,6 +92,9 @@ func newHarness(t *testing.T, replies ...string) *harness {
 		handlers.NewCombatHandler(encounters, characters, monsters, sessions, campaigns, roller,
 			encounter.NewService(encounters, monsters, characters, events, narrator, rules.NewEngine(roller))),
 		handlers.NewDiceHandler(roller),
+		handlers.NewNPCHandler(npcs, campaigns),
+		handlers.NewStoryHandler(story, campaigns, nil),
+		handlers.NewLocationHandler(locations, campaigns),
 	)
 
 	return &harness{server: server, stub: stub}

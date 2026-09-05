@@ -14,6 +14,7 @@ import (
 	"github.com/dnd-campaign/manager/internal/api/middleware"
 	"github.com/dnd-campaign/manager/internal/application/encounter"
 	"github.com/dnd-campaign/manager/internal/application/memory"
+	"github.com/dnd-campaign/manager/internal/application/story"
 	"github.com/dnd-campaign/manager/internal/application/turn"
 	"github.com/dnd-campaign/manager/internal/domain/dice"
 	"github.com/dnd-campaign/manager/internal/domain/rules"
@@ -73,7 +74,10 @@ func main() {
 	campaignRepo := mongodb.NewCampaignRepository(mongoClient)
 	characterRepo := mongodb.NewCharacterRepository(mongoClient)
 	monsterRepo := mongodb.NewMonsterRepository(mongoClient)
+	npcRepo := mongodb.NewNPCRepository(mongoClient)
+	storyRepo := mongodb.NewStoryRepository(mongoClient)
 	sessionRepo := mongodb.NewSessionRepository(mongoClient)
+	locationRepo := mongodb.NewLocationRepository(mongoClient, sessionRepo)
 	// The event repository writes through the session repository so a logged
 	// roll or AI call also lands in the session's running totals.
 	eventRepo := mongodb.NewStoryEventRepository(mongoClient, sessionRepo)
@@ -103,6 +107,17 @@ func main() {
 	}
 	defer aiService.Close()
 
+	// Reuse of scene descriptions, off unless configured. Only an identical
+	// prompt hits, so a party walking back into a described room is free while
+	// anything that changed is not.
+	if cfg.Memory.CacheSize > 0 {
+		aiService.EnableCache(cfg.Memory.CacheSize, cfg.Memory.CacheTTL)
+		logger.Info().
+			Int("entries", cfg.Memory.CacheSize).
+			Dur("ttl", cfg.Memory.CacheTTL).
+			Msg("Scene description caching enabled")
+	}
+
 	turnService := turn.NewService(
 		characterRepo, monsterRepo, sessionRepo, eventRepo,
 		aiService, rules.NewEngine(roller),
@@ -120,6 +135,9 @@ func main() {
 	)
 
 	campaignMemory := memory.New(eventRepo, campaignRepo, aiService)
+	campaignMemory.Story = storyRepo
+	turnService.NPCs = npcRepo
+	turnService.Places = locationRepo
 	campaignMemory.Budget = memory.Budget{
 		MaxTokens: cfg.Memory.MaxTokens,
 		MinRecent: cfg.Memory.MinRecent,
@@ -133,7 +151,7 @@ func main() {
 	// Initialize handlers. Each needs the other's repository: campaigns cascade
 	// their characters on delete, characters resolve their campaign by _id.
 	campaignHandler := handlers.NewCampaignHandler(
-		campaignRepo, characterRepo, monsterRepo, sessionRepo, eventRepo, encounterRepo)
+		campaignRepo, characterRepo, monsterRepo, npcRepo, storyRepo, locationRepo, sessionRepo, eventRepo, encounterRepo)
 	characterHandler := handlers.NewCharacterHandler(characterRepo, campaignRepo, roller)
 	monsterHandler := handlers.NewMonsterHandler(monsterRepo, campaignRepo)
 	sessionHandler := handlers.NewSessionHandler(sessionRepo, eventRepo, campaignRepo)
@@ -141,6 +159,10 @@ func main() {
 	combatHandler := handlers.NewCombatHandler(
 		encounterRepo, characterRepo, monsterRepo, sessionRepo, campaignRepo, roller, encounterTurns)
 	diceHandler := handlers.NewDiceHandler(roller)
+	npcHandler := handlers.NewNPCHandler(npcRepo, campaignRepo)
+	storyReview := story.NewService(storyRepo, eventRepo, aiService)
+	storyHandler := handlers.NewStoryHandler(storyRepo, campaignRepo, storyReview)
+	locationHandler := handlers.NewLocationHandler(locationRepo, campaignRepo)
 
 	// Create API server
 	server := api.NewServer(api.ServerConfig{
@@ -160,7 +182,7 @@ func main() {
 			Burst:             cfg.RateLimit.Burst,
 		},
 	}, campaignHandler, characterHandler, monsterHandler, sessionHandler, actionHandler, combatHandler,
-		diceHandler)
+		diceHandler, npcHandler, storyHandler, locationHandler)
 
 	// Start server in goroutine
 	go func() {

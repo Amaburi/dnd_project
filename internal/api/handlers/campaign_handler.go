@@ -16,6 +16,9 @@ type CampaignHandler struct {
 	// its children with it instead of orphaning them.
 	characterRepo *mongodb.CharacterRepository
 	monsterRepo   *mongodb.MonsterRepository
+	npcRepo       *mongodb.NPCRepository
+	storyRepo     *mongodb.StoryRepository
+	locationRepo  *mongodb.LocationRepository
 	sessionRepo   *mongodb.SessionRepository
 	eventRepo     *mongodb.StoryEventRepository
 	encounterRepo *mongodb.EncounterRepository
@@ -26,6 +29,9 @@ func NewCampaignHandler(
 	campaignRepo *mongodb.CampaignRepository,
 	characterRepo *mongodb.CharacterRepository,
 	monsterRepo *mongodb.MonsterRepository,
+	npcRepo *mongodb.NPCRepository,
+	storyRepo *mongodb.StoryRepository,
+	locationRepo *mongodb.LocationRepository,
 	sessionRepo *mongodb.SessionRepository,
 	eventRepo *mongodb.StoryEventRepository,
 	encounterRepo *mongodb.EncounterRepository,
@@ -34,6 +40,9 @@ func NewCampaignHandler(
 		campaignRepo:  campaignRepo,
 		characterRepo: characterRepo,
 		monsterRepo:   monsterRepo,
+		npcRepo:       npcRepo,
+		storyRepo:     storyRepo,
+		locationRepo:  locationRepo,
 		sessionRepo:   sessionRepo,
 		eventRepo:     eventRepo,
 		encounterRepo: encounterRepo,
@@ -160,6 +169,26 @@ func (h *CampaignHandler) DeleteCampaign(c *gin.Context) {
 		return
 	}
 	if err := h.monsterRepo.DeleteMonstersByCampaign(ctx, campaign.CampaignID); err != nil {
+		respondRepoError(c, err)
+		return
+	}
+	if err := h.npcRepo.DeleteNPCsByCampaign(ctx, campaign.CampaignID); err != nil {
+		respondRepoError(c, err)
+		return
+	}
+	if err := h.storyRepo.DeleteThreadsByCampaign(ctx, campaign.CampaignID); err != nil {
+		respondRepoError(c, err)
+		return
+	}
+	if err := h.storyRepo.DeleteConsequencesByCampaign(ctx, campaign.CampaignID); err != nil {
+		respondRepoError(c, err)
+		return
+	}
+	if err := h.storyRepo.DeleteArcsByCampaign(ctx, campaign.CampaignID); err != nil {
+		respondRepoError(c, err)
+		return
+	}
+	if err := h.locationRepo.DeleteLocationsByCampaign(ctx, campaign.CampaignID); err != nil {
 		respondRepoError(c, err)
 		return
 	}

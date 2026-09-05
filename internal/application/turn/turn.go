@@ -56,6 +56,22 @@ type (
 		GetActiveSession(ctx context.Context, campaignID string) (*models.Session, error)
 	}
 
+	// NPCStore is who the party has met. Optional: without it, talking still
+	// works, it simply produces narration that nobody remembers.
+	NPCStore interface {
+		GetNPCsByCampaign(ctx context.Context, campaignID string) ([]*models.NPC, error)
+		GetNPCByName(ctx context.Context, campaignID, name string) (*models.NPC, error)
+		SaveMemory(ctx context.Context, campaignID string, npc *models.NPC) error
+	}
+
+	// PlaceStore is where the party is and what is in it. Optional: without it
+	// the game simply has no scenery, which is what every campaign had before
+	// locations existed.
+	PlaceStore interface {
+		GetCurrentLocation(ctx context.Context, campaignID string) (*models.Location, error)
+		SaveLocation(ctx context.Context, campaignID string, location *models.Location) error
+	}
+
 	// EventStore is the campaign's memory.
 	EventStore interface {
 		AppendEvent(ctx context.Context, event *models.StoryEvent) error
@@ -79,6 +95,7 @@ type (
 		NarrateAction(ctx context.Context, req *ai.NarrationRequest) (*ai.NarrationResponse, error)
 		NarrateCast(ctx context.Context, req *ai.NarrationRequest) (*ai.NarrationResponse, error)
 		NarrateCheck(ctx context.Context, req *ai.NarrationRequest) (*ai.NarrationResponse, error)
+		GenerateNPCDialogue(ctx context.Context, req *ai.NPCDialogueRequest) (*ai.NPCDialogueResponse, error)
 		GenerateNarrative(ctx context.Context, req *ai.NarrativeRequest) (*ai.NarrativeResponse, error)
 	}
 )
@@ -109,6 +126,15 @@ type Service struct {
 	// does not need, and one that does not fit compacts exactly once and then
 	// fits again.
 	Compactor Compactor
+
+	// NPCs is who the party has met. Without it an NPC meets the party for the
+	// first time every time, which is the most immersion-breaking thing an AI
+	// DM can do.
+	NPCs NPCStore
+
+	// Places is the room the party is standing in. Without it the DM narrates
+	// furniture that nothing can act on.
+	Places PlaceStore
 }
 
 // NewService wires a turn service.
@@ -148,6 +174,12 @@ type Result struct {
 	Attack *rules.AttackResult `json:"attack,omitempty"`
 	Cast   *rules.CastResult   `json:"cast,omitempty"`
 
+	// NPC is who was spoken to, after the conversation was recorded.
+	NPC *models.NPC `json:"npc,omitempty"`
+
+	// Interaction is what was done to a thing in the room.
+	Interaction *InteractionResult `json:"interaction,omitempty"`
+
 	Narration string             `json:"narration"`
 	Event     *models.StoryEvent `json:"event,omitempty"`
 	Session   string             `json:"session_id"`
@@ -164,6 +196,26 @@ type Result struct {
 	TokensUsed int           `json:"tokens_used"`
 	Cost       float64       `json:"cost_usd"`
 	Elapsed    time.Duration `json:"elapsed"`
+}
+
+// InteractionResult is what doing something to a thing in the room produced.
+type InteractionResult struct {
+	Target string                 `json:"target"`
+	Kind   models.InteractionKind `json:"kind"`
+
+	Succeeded bool `json:"succeeded"`
+
+	// Discovered names what a successful search turned up. It is filled by the
+	// engine comparing a roll with a DC, never by the narrator: hidden things
+	// are kept out of the prompt entirely, so the model could not name one if
+	// it wanted to.
+	Discovered []string `json:"discovered,omitempty"`
+
+	// Revealed is the prose for what was found, taken from the world rather
+	// than invented.
+	Revealed []string `json:"revealed,omitempty"`
+
+	State models.InteractableState `json:"state,omitempty"`
 }
 
 // TakeAction runs one full turn.
@@ -220,6 +272,26 @@ func (s *Service) TakeAction(ctx context.Context, req *Request) (*Result, error)
 
 	result := &Result{Session: session.SessionID}
 
+	// The people present are offered to the parser as a closed list, the same
+	// way weapons and spells are: without it the model invents someone the
+	// campaign has never heard of and nothing can remember.
+	npcNames, err := s.presentNPCs(ctx, req)
+	if err != nil {
+		return nil, err
+	}
+
+	// The room, and what is in it. Only what the party can see: a hidden thing
+	// never reaches the parser, so it cannot be guessed at by name.
+	location, err := s.currentLocation(ctx, req)
+	if err != nil {
+		return nil, err
+	}
+	var interactables, exits []string
+	if location != nil {
+		interactables = location.InteractableNames()
+		exits = location.ExitNames()
+	}
+
 	// --- parse -------------------------------------------------------------
 	targets := make([]string, 0, len(monsters))
 	byName := make(map[string]*models.Monster, len(monsters))
@@ -233,7 +305,7 @@ func (s *Service) TakeAction(ctx context.Context, req *Request) (*Result, error)
 
 	parsed, err := s.narrator.ExtractIntent(ctx, &ai.IntentRequest{
 		PlayerInput: req.Input,
-		Options:     models.ActionOptionsFor(actor, targets),
+		Options:     s.optionsFor(actor, targets, npcNames, interactables, exits),
 		Situation:   situationFrom(session, recent),
 	})
 	if err != nil {
@@ -337,6 +409,71 @@ func (s *Service) TakeAction(ctx context.Context, req *Request) (*Result, error)
 			return nil, err
 		}
 
+	case models.IntentInteract:
+		interaction, check, refusal, err := s.resolveInteraction(ctx, req, actor, parsed.Intent, location)
+		if err != nil {
+			return nil, err
+		}
+		if refusal != "" {
+			result.NeedsClarification = true
+			result.Clarification = refusal
+			result.Elapsed = time.Since(started)
+			return result, nil
+		}
+		// Nothing in the room matched, so this is just something the character
+		// did: describe it rather than inventing an object to act on.
+		if interaction == nil {
+			eventType = "exploration"
+			prose, err := s.narrator.GenerateNarrative(ctx, &ai.NarrativeRequest{
+				PlayerInput:    req.Input,
+				Location:       sceneOf(location, req.Scene),
+				PartyStatus:    partyStatus(actor),
+				RecentEvents:   recent,
+				DMStyle:        orDefault(req.Style.NarrativeVoice, "collaborative"),
+				NarrativeVoice: orDefault(req.Style.NarrativeVoice, "third person, present tense"),
+				HumorLevel:     "occasional",
+				DetailLevel:    "moderate",
+			})
+			if err != nil {
+				return nil, err
+			}
+			narration = &ai.NarrationResponse{
+				Text: prose.Narrative, TokensUsed: prose.TokensUsed, Cost: prose.Cost,
+			}
+			break
+		}
+
+		result.Interaction = interaction
+		result.Check = check
+		eventType = "exploration"
+
+		if check != nil {
+			narration, err = s.narrator.NarrateCheck(ctx, &ai.NarrationRequest{
+				Facts:   interactionFacts(check, interaction),
+				Context: sceneWith(req.Scene, recent), Style: req.Style,
+			})
+		} else {
+			prose, proseErr := s.narrator.GenerateNarrative(ctx, &ai.NarrativeRequest{
+				PlayerInput:    req.Input,
+				Location:       sceneOf(location, req.Scene),
+				PartyStatus:    partyStatus(actor),
+				RecentEvents:   recent,
+				DMStyle:        orDefault(req.Style.NarrativeVoice, "collaborative"),
+				NarrativeVoice: orDefault(req.Style.NarrativeVoice, "third person, present tense"),
+				HumorLevel:     "occasional",
+				DetailLevel:    "moderate",
+			})
+			if proseErr != nil {
+				return nil, proseErr
+			}
+			narration = &ai.NarrationResponse{
+				Text: prose.Narrative, TokensUsed: prose.TokensUsed, Cost: prose.Cost,
+			}
+		}
+		if err != nil {
+			return nil, err
+		}
+
 	case models.IntentSkillCheck, models.IntentSavingThrow:
 		check := s.resolveCheck(actor, parsed.Intent)
 		result.Check = &check
@@ -349,6 +486,46 @@ func (s *Service) TakeAction(ctx context.Context, req *Request) (*Result, error)
 		if err != nil {
 			return nil, err
 		}
+
+	case models.IntentTalk:
+		// Talking to a named NPC is a conversation with someone who remembers
+		// the party. Talking to no one in particular is still just narration.
+		npc, refusal, err := s.findNPC(ctx, req, parsed.Intent)
+		if err != nil {
+			return nil, err
+		}
+		if refusal != "" {
+			result.NeedsClarification = true
+			result.Clarification = refusal
+			result.Elapsed = time.Since(started)
+			return result, nil
+		}
+
+		if npc != nil {
+			spoken, err := s.narrator.GenerateNPCDialogue(ctx, &ai.NPCDialogueRequest{
+				NPC: npc, SpeakerName: actor.Name,
+				PlayerMessage: req.Input,
+				Context:       sceneWith(req.Scene, recent),
+			})
+			if err != nil {
+				return nil, err
+			}
+			narration = &ai.NarrationResponse{
+				Text: spoken.Dialogue, TokensUsed: spoken.TokensUsed, Cost: spoken.Cost,
+			}
+			eventType = "dialogue"
+
+			// The conversation is recorded after it happens, so what the NPC
+			// remembers is what actually took place rather than what was
+			// proposed. The outcome comes from a closed list; the impact comes
+			// from the table, never from the model.
+			if err := s.rememberConversation(ctx, req, actor, npc, parsed.Intent); err != nil {
+				return nil, err
+			}
+			result.NPC = npc
+			break
+		}
+		fallthrough
 
 	default:
 		// Nothing mechanical happened: describe the scene instead. The history
@@ -584,6 +761,70 @@ func (s *Service) resolveCast(
 	return &cast, monster, "", nil
 }
 
+// presentNPCs lists who can be spoken to, for the parser's closed list.
+func (s *Service) presentNPCs(ctx context.Context, req *Request) ([]string, error) {
+	if s.NPCs == nil {
+		return nil, nil
+	}
+
+	npcs, err := s.NPCs.GetNPCsByCampaign(ctx, req.CampaignID)
+	if err != nil {
+		return nil, err
+	}
+	names := make([]string, 0, len(npcs))
+	for _, npc := range npcs {
+		if ok, _ := npc.CanConverse(); ok {
+			names = append(names, npc.Name)
+		}
+	}
+	return names, nil
+}
+
+// findNPC resolves the person being spoken to.
+//
+// A name the campaign does not have returns nothing rather than a refusal: the
+// turn falls through to plain narration instead of the model improvising a
+// person nobody has ever heard of and that nothing will remember.
+func (s *Service) findNPC(ctx context.Context, req *Request, intent models.Intent) (*models.NPC, string, error) {
+	name := strings.TrimSpace(intent.Target)
+	if s.NPCs == nil || name == "" {
+		return nil, "", nil
+	}
+
+	npc, err := s.NPCs.GetNPCByName(ctx, req.CampaignID, name)
+	if err != nil {
+		return nil, "", err
+	}
+	if npc == nil {
+		return nil, "", nil
+	}
+	if ok, reason := npc.CanConverse(); !ok {
+		return nil, reason, nil
+	}
+	return npc, "", nil
+}
+
+// rememberConversation records the meeting and what the party did.
+func (s *Service) rememberConversation(
+	ctx context.Context,
+	req *Request,
+	actor *models.Character,
+	npc *models.NPC,
+	intent models.Intent,
+) error {
+	npc.Meet()
+
+	// An outcome of none still counts as a meeting; it simply moves nothing.
+	if intent.NPCOutcome != models.OutcomeNone {
+		npc.Remember(models.NPCMemory{
+			Summary: strings.TrimSpace(req.Input),
+			Actor:   actor.Name,
+			Outcome: intent.NPCOutcome,
+		})
+	}
+	return s.NPCs.SaveMemory(ctx, req.CampaignID, npc)
+}
+
 // saveSpells persists the caster's slots.
 func (s *Service) saveSpells(ctx context.Context, req *Request, actor *models.Character) error {
 	return s.characters.UpdateSpellSlots(ctx, req.CharacterID, actor.Spells)
@@ -782,4 +1023,171 @@ func orDefault(value, fallback string) string {
 		return fallback
 	}
 	return value
+}
+
+// currentLocation is where the party is standing, or nil when nothing tracks it.
+func (s *Service) currentLocation(ctx context.Context, req *Request) (*models.Location, error) {
+	if s.Places == nil {
+		return nil, nil
+	}
+	return s.Places.GetCurrentLocation(ctx, req.CampaignID)
+}
+
+// optionsFor assembles every closed list the parser chooses from.
+func (s *Service) optionsFor(
+	actor *models.Character,
+	targets, npcNames, interactables, exits []string,
+) models.ActionOptions {
+	options := models.ActionOptionsFor(actor, targets, npcNames...)
+	options.Interactables = interactables
+	options.Exits = exits
+	return options
+}
+
+// resolveInteraction does something to a thing in the room.
+//
+// Returns (nil, nil, "", nil) when there is no world to act on, so the turn can
+// fall back to describing what the character did. A refusal is the situation --
+// the thing is locked, or does not do that -- rather than an error.
+func (s *Service) resolveInteraction(
+	ctx context.Context,
+	req *Request,
+	actor *models.Character,
+	intent models.Intent,
+	location *models.Location,
+) (*InteractionResult, *rules.CheckResult, string, error) {
+	if location == nil {
+		return nil, nil, "", nil
+	}
+
+	target, ok := location.Interactable(intent.Target)
+	if !ok {
+		return nil, nil, fmt.Sprintf(
+			"There is no %q here. What did you want to look at?", intent.Target), nil
+	}
+
+	kind := intent.Interaction
+	if kind == "" {
+		kind = models.InteractExamine
+	}
+	if !target.Allows(kind) {
+		return nil, nil, fmt.Sprintf(
+			"The %s is not something you can %s.", target.Name, kind), nil
+	}
+
+	result := &InteractionResult{Target: target.Name, Kind: kind}
+
+	switch kind {
+	case models.InteractSearch:
+		check := s.searchCheck(actor, location, models.SkillPerception)
+
+		// The engine compares the roll with each hidden thing's DC. Nothing
+		// here is a judgement call, and the narrator is told afterwards --
+		// which is why hidden things can be kept out of its prompt entirely.
+		for _, found := range location.Discover(models.SkillPerception, check.Roll.Total) {
+			result.Discovered = append(result.Discovered, found.Name)
+			if reveals := strings.TrimSpace(found.Reveals); reveals != "" {
+				result.Revealed = append(result.Revealed, reveals)
+			}
+		}
+		for _, exit := range location.DiscoverExits(check.Roll.Total) {
+			result.Discovered = append(result.Discovered, exit.Direction)
+		}
+		if reveals := strings.TrimSpace(target.Reveals); reveals != "" && target.State != models.StateSearched {
+			result.Revealed = append(result.Revealed, reveals)
+		}
+		target.State = models.StateSearched
+		result.Succeeded = len(result.Discovered) > 0 || len(result.Revealed) > 0
+
+		if err := s.saveLocation(ctx, req, location); err != nil {
+			return nil, nil, "", err
+		}
+		result.State = target.State
+		return result, &check, "", nil
+
+	case models.InteractUnlock:
+		if target.State != models.StateLocked {
+			return nil, nil, fmt.Sprintf("The %s is not locked.", target.Name), nil
+		}
+		skill := target.UnlockSkill
+		if !skill.Valid() {
+			skill = models.SkillSleightOfHand
+		}
+		check := s.engine.SkillCheck(actor, skill, target.UnlockDC, intent.Advantage.Mode())
+		result.Succeeded = target.Unlock(check.Roll.Total)
+		result.State = target.State
+
+		if err := s.saveLocation(ctx, req, location); err != nil {
+			return nil, nil, "", err
+		}
+		return result, &check, "", nil
+
+	case models.InteractOpen:
+		if ok, reason := target.CanOpen(); !ok {
+			// A locked chest is a fact about the world, not a failed roll.
+			return nil, nil, capitalise(reason) + ". Try picking it, or forcing it.", nil
+		}
+		target.State = models.StateOpen
+		result.Succeeded, result.State = true, target.State
+		if reveals := strings.TrimSpace(target.Reveals); reveals != "" {
+			result.Revealed = append(result.Revealed, reveals)
+		}
+		if err := s.saveLocation(ctx, req, location); err != nil {
+			return nil, nil, "", err
+		}
+		return result, nil, "", nil
+
+	default:
+		// Examining, pulling, climbing: nothing to decide, so it is described.
+		result.Succeeded = true
+		result.State = target.State
+		return result, nil, "", nil
+	}
+}
+
+// searchCheck rolls a search, folding in how dark the room is.
+//
+// Dim light is lightly obscured, which is disadvantage on sight-based
+// Perception. It is a rule, not atmosphere.
+func (s *Service) searchCheck(actor *models.Character, location *models.Location, skill models.Skill) rules.CheckResult {
+	mode := location.Lighting.PerceptionMode()
+	return s.engine.SkillCheck(actor, skill, models.DifficultyClasses["medium"], mode)
+}
+
+func (s *Service) saveLocation(ctx context.Context, req *Request, location *models.Location) error {
+	if s.Places == nil {
+		return nil
+	}
+	return s.Places.SaveLocation(ctx, req.CampaignID, location)
+}
+
+// interactionFacts adds what was found to the check's own facts.
+func interactionFacts(check *rules.CheckResult, interaction *InteractionResult) map[string]string {
+	facts := check.Facts()
+	facts["target"] = interaction.Target
+	facts["interaction"] = string(interaction.Kind)
+
+	found := "nothing new"
+	if len(interaction.Revealed) > 0 {
+		found = strings.Join(interaction.Revealed, "; ")
+	} else if len(interaction.Discovered) > 0 {
+		found = strings.Join(interaction.Discovered, "; ")
+	}
+	facts["found"] = found
+	return facts
+}
+
+// sceneOf prefers the tracked room over the caller's free-text scene.
+func sceneOf(location *models.Location, scene string) string {
+	if location != nil {
+		return location.SceneBlock()
+	}
+	return orDefault(scene, "unspecified")
+}
+
+func capitalise(s string) string {
+	if s == "" {
+		return s
+	}
+	return strings.ToUpper(s[:1]) + s[1:]
 }

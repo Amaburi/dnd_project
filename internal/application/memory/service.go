@@ -45,6 +45,15 @@ type (
 		UpdateSummary(ctx context.Context, campaignID string, summary models.CampaignSummary) error
 	}
 
+	// StoryStore is the DM's outstanding work: threads it opened and
+	// consequences the party set in motion. Optional -- without it the memory
+	// block is history only, and the DM will drop threads it opened.
+	StoryStore interface {
+		GetActiveArc(ctx context.Context, campaignID string) (*models.StoryArc, error)
+		GetLiveThreads(ctx context.Context, campaignID string) ([]*models.PlotThread, error)
+		GetPendingConsequences(ctx context.Context, campaignID string) ([]*models.Consequence, error)
+	}
+
 	// Summarizer compresses old history.
 	//
 	// It takes strings and returns one, rather than the ai request types, so
@@ -60,6 +69,9 @@ type Service struct {
 	events     EventStore
 	campaigns  CampaignStore
 	summarizer Summarizer
+
+	// Story supplies open threads and pending consequences. Optional.
+	Story StoryStore
 
 	Budget       Budget
 	Window       int
@@ -88,7 +100,48 @@ func (s *Service) Build(ctx context.Context, campaignID string) (Context, error)
 	if err != nil {
 		return Context{}, err
 	}
-	return Assemble(summary.Text, events, s.Budget), nil
+
+	story, err := s.storyBlock(ctx, campaignID)
+	if err != nil {
+		return Context{}, err
+	}
+
+	return Assemble(Sources{
+		Summary: summary.Text,
+		Story:   story,
+		Events:  events,
+	}, s.Budget), nil
+}
+
+// storyBlock renders the DM's outstanding work, or "" when nothing tracks it.
+//
+// An empty string rather than the "nothing is outstanding" sentence: with no
+// store there is no claim to make, and asserting that nothing is pending when
+// nothing is tracking it would be a lie the DM would act on.
+func (s *Service) storyBlock(ctx context.Context, campaignID string) (string, error) {
+	if s.Story == nil {
+		return "", nil
+	}
+
+	arc, err := s.Story.GetActiveArc(ctx, campaignID)
+	if err != nil {
+		return "", fmt.Errorf("reading the active arc: %w", err)
+	}
+	threads, err := s.Story.GetLiveThreads(ctx, campaignID)
+	if err != nil {
+		return "", fmt.Errorf("reading plot threads: %w", err)
+	}
+	consequences, err := s.Story.GetPendingConsequences(ctx, campaignID)
+	if err != nil {
+		return "", fmt.Errorf("reading pending consequences: %w", err)
+	}
+	if arc == nil && len(threads) == 0 && len(consequences) == 0 {
+		return "", nil
+	}
+
+	// The arc goes first: it is the frame the rest sits inside, and it is what
+	// tells the DM whether to build tension or land it.
+	return models.ArcBlock(arc, threads) + "\n\n" + models.StoryBlock(threads, consequences), nil
 }
 
 // load reads the stored summary and every event it does not already cover.
