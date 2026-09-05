@@ -3,6 +3,7 @@ package handlers
 import (
 	"net/http"
 
+	"github.com/dnd-campaign/manager/internal/domain/dice"
 	"github.com/dnd-campaign/manager/internal/domain/models"
 	"github.com/dnd-campaign/manager/internal/infrastructure/database/mongodb"
 	"github.com/gin-gonic/gin"
@@ -15,13 +16,22 @@ type CharacterHandler struct {
 	// campaignRepo resolves the :id path segment (a campaign _id) to the
 	// campaign_id that characters are actually keyed by.
 	campaignRepo *mongodb.CampaignRepository
+
+	// roller is the only randomness a character operation needs: a hit die
+	// spent on a short rest. The model owns the rule, the caller owns the die.
+	roller *dice.Roller
 }
 
 // NewCharacterHandler creates a new character handler
-func NewCharacterHandler(characterRepo *mongodb.CharacterRepository, campaignRepo *mongodb.CampaignRepository) *CharacterHandler {
+func NewCharacterHandler(
+	characterRepo *mongodb.CharacterRepository,
+	campaignRepo *mongodb.CampaignRepository,
+	roller *dice.Roller,
+) *CharacterHandler {
 	return &CharacterHandler{
 		characterRepo: characterRepo,
 		campaignRepo:  campaignRepo,
+		roller:        roller,
 	}
 }
 

@@ -142,6 +142,12 @@ type ClientConfig struct {
 	Timeout    time.Duration
 	MaxRetries int
 	Pricing    Pricing
+
+	// RequestsPerHour caps calls to the provider over a rolling hour. Zero
+	// disables it. This is a budget on the *provider*, which is why it lives
+	// here and not in HTTP middleware: one HTTP request can make several
+	// provider calls, so counting at the edge would measure the wrong thing.
+	RequestsPerHour int
 }
 
 // Pricing describes what a provider charges, in USD per million tokens.

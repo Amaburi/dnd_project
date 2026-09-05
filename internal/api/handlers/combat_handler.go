@@ -3,6 +3,7 @@ package handlers
 import (
 	"net/http"
 
+	"github.com/dnd-campaign/manager/internal/application/encounter"
 	"github.com/dnd-campaign/manager/internal/domain/combat"
 	"github.com/dnd-campaign/manager/internal/domain/dice"
 	"github.com/dnd-campaign/manager/internal/domain/models"
@@ -23,6 +24,10 @@ type CombatHandler struct {
 	sessions     *mongodb.SessionRepository
 	campaignRepo *mongodb.CampaignRepository
 	roller       *dice.Roller
+
+	// turns plays a monster's turn. The orchestration lives in
+	// application/encounter so it can be tested without a database.
+	turns *encounter.Service
 }
 
 // NewCombatHandler creates a new combat handler.
@@ -33,10 +38,12 @@ func NewCombatHandler(
 	sessions *mongodb.SessionRepository,
 	campaignRepo *mongodb.CampaignRepository,
 	roller *dice.Roller,
+	turns *encounter.Service,
 ) *CombatHandler {
 	return &CombatHandler{
 		encounters: encounters, characters: characters, monsters: monsters,
 		sessions: sessions, campaignRepo: campaignRepo, roller: roller,
+		turns: turns,
 	}
 }
 
@@ -311,4 +318,42 @@ func (h *CombatHandler) DeleteEncounter(c *gin.Context) {
 		return
 	}
 	c.Status(http.StatusNoContent)
+}
+
+// ResolveTurn handles POST /api/v1/campaigns/:id/encounters/:encounter_id/resolve-turn
+//
+// This is the half of combat that was missing: the tracker could say whose turn
+// it was and nothing could play it, so every fight was one-sided. It resolves
+// the current monster's turn -- choose, roll, apply, narrate, advance.
+//
+// A player's turn is reported as awaiting them rather than played for them;
+// players act through POST /campaigns/:id/actions.
+func (h *CombatHandler) ResolveTurn(c *gin.Context) {
+	campaignID, ok := h.resolveCampaignID(c)
+	if !ok {
+		return
+	}
+	id, err := primitive.ObjectIDFromHex(c.Param("encounter_id"))
+	if err != nil {
+		badRequest(c, "invalid encounter ID")
+		return
+	}
+
+	ctx := c.Request.Context()
+	encounter, err := h.encounters.GetEncounterInCampaign(ctx, campaignID, id)
+	if err != nil {
+		respondRepoError(c, err)
+		return
+	}
+	if encounter == nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "encounter not found"})
+		return
+	}
+
+	result, err := h.turns.ResolveTurn(ctx, campaignID, encounter.EncounterID)
+	if err != nil {
+		respondRepoError(c, err)
+		return
+	}
+	c.JSON(http.StatusOK, result)
 }

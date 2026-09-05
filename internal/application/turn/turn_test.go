@@ -1017,3 +1017,80 @@ func TestParsedAdvantageAppliesToSpellAttacks(t *testing.T) {
 			len(result.Cast.Attacks[0].Roll.Rolls))
 	}
 }
+
+// --- concentration -----------------------------------------------------------
+
+// Without this a wizard holds every concentration spell they own at once and
+// pays for none of them.
+func TestCastingAConcentrationSpellStartsIt(t *testing.T) {
+	h := castingHarness(t,
+		`{"action":"cast_spell","spell":"Hold Person","target":"Goblin","slot_level":2,"confidence":"high"}`,
+		"The goblin locks rigid.")
+	h.characters.character.Spells.Known = append(h.characters.character.Spells.Known,
+		models.Spell{Name: "Hold Person", Level: 2})
+	// A natural 1 fails the goblin's save, so the condition actually lands and
+	// the spell has a victim to record.
+	h.service.engine = rules.NewEngine(dice.NewScripted(1))
+
+	result, err := h.service.TakeAction(context.Background(), request("I cast hold person on the goblin"))
+	if err != nil {
+		t.Fatalf("TakeAction: %v", err)
+	}
+	if result.NeedsClarification {
+		t.Fatalf("the cast was refused: %q", result.Clarification)
+	}
+	if !h.characters.character.IsConcentrating() {
+		t.Fatal("concentration did not start")
+	}
+	held := h.characters.character.Spells.Concentrating
+	if held.Spell != "Hold Person" {
+		t.Errorf("concentrating on %q", held.Spell)
+	}
+	// The spell has to remember what it did, or ending it cannot undo it.
+	if held.Condition != models.ConditionParalyzed {
+		t.Errorf("condition = %q, want paralyzed", held.Condition)
+	}
+	if len(held.Targets) == 0 {
+		t.Error("the spell recorded no target to release")
+	}
+}
+
+// One at a time, and the player is told what they gave up.
+func TestASecondConcentrationSpellReplacesTheFirst(t *testing.T) {
+	h := castingHarness(t,
+		`{"action":"cast_spell","spell":"Web","target":"Goblin","slot_level":2,"confidence":"high"}`,
+		"Strands burst across the room.")
+	h.characters.character.Spells.Known = append(h.characters.character.Spells.Known,
+		models.Spell{Name: "Web", Level: 2})
+	h.characters.character.BeginConcentration(models.Concentration{Spell: "Hold Person"})
+
+	result, err := h.service.TakeAction(context.Background(), request("I cast web"))
+	if err != nil {
+		t.Fatalf("TakeAction: %v", err)
+	}
+	if h.characters.character.Spells.Concentrating.Spell != "Web" {
+		t.Errorf("concentrating on %q, want Web", h.characters.character.Spells.Concentrating.Spell)
+	}
+	if !strings.Contains(result.Warning, "Hold Person") {
+		t.Errorf("the player was not told what they dropped: %q", result.Warning)
+	}
+}
+
+// A spell that needs no concentration must not disturb one that is held.
+func TestANonConcentrationSpellLeavesConcentrationAlone(t *testing.T) {
+	h := castingHarness(t,
+		`{"action":"cast_spell","spell":"Magic Missile","target":"Goblin","slot_level":1,"confidence":"high"}`,
+		"Darts of force.")
+	h.characters.character.BeginConcentration(models.Concentration{Spell: "Hold Person"})
+
+	if _, err := h.service.TakeAction(context.Background(), request("I cast magic missile")); err != nil {
+		t.Fatalf("TakeAction: %v", err)
+	}
+	if !h.characters.character.IsConcentrating() {
+		t.Fatal("a Magic Missile dropped a held spell")
+	}
+	if h.characters.character.Spells.Concentrating.Spell != "Hold Person" {
+		t.Errorf("concentrating on %q, want the original Hold Person",
+			h.characters.character.Spells.Concentrating.Spell)
+	}
+}

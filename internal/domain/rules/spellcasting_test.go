@@ -358,3 +358,129 @@ func TestCastFactsAreCompleteForNarration(t *testing.T) {
 		t.Errorf("the summary does not name the spell: %q", facts["fact_summary"])
 	}
 }
+
+// --- concentration -----------------------------------------------------------
+
+func holder(t *testing.T) *models.Character {
+	t.Helper()
+	c := caster()
+	c.CombatStats.HitPoints = models.HitPoints{Current: 30, Maximum: 30}
+	c.BeginConcentration(models.Concentration{
+		Spell: "Hold Person", SlotLevel: 2,
+		Condition: models.ConditionParalyzed, Targets: []string{"cb-goblin"},
+	})
+	return c
+}
+
+// Damage forces a Constitution save, and failing it ends the spell.
+func TestConcentrationBreaksOnAFailedSave(t *testing.T) {
+	// A natural 1 against DC 10 with any modest modifier fails.
+	e := scripted(1)
+	c := holder(t)
+
+	result, err := e.ConcentrationCheck(c, 8)
+	if err != nil {
+		t.Fatalf("ConcentrationCheck: %v", err)
+	}
+	if result.Check == nil {
+		t.Fatal("no save was rolled")
+	}
+	if result.Check.DC != 10 {
+		t.Errorf("DC = %d, want 10 for 8 damage", result.Check.DC)
+	}
+	if !result.Broken {
+		t.Error("a failed save did not break concentration")
+	}
+	if c.IsConcentrating() {
+		t.Error("the spell is still being held")
+	}
+	if result.Spell != "Hold Person" {
+		t.Errorf("the broken spell was %q", result.Spell)
+	}
+	// The victims are reported so the caller can lift the condition.
+	if len(result.Targets) != 1 || result.Targets[0] != "cb-goblin" {
+		t.Errorf("targets = %v, want the goblin", result.Targets)
+	}
+}
+
+func TestConcentrationHoldsOnASuccessfulSave(t *testing.T) {
+	e := scripted(20)
+	c := holder(t)
+
+	result, err := e.ConcentrationCheck(c, 8)
+	if err != nil {
+		t.Fatalf("ConcentrationCheck: %v", err)
+	}
+	if result.Broken {
+		t.Error("a natural 20 broke concentration")
+	}
+	if !c.IsConcentrating() {
+		t.Error("the spell was dropped despite the save")
+	}
+}
+
+// Heavy damage raises the DC: half the damage when that is worse than ten.
+func TestHeavyDamageRaisesTheConcentrationDC(t *testing.T) {
+	e := scripted(20)
+	c := holder(t)
+
+	result, err := e.ConcentrationCheck(c, 44)
+	if err != nil {
+		t.Fatalf("ConcentrationCheck: %v", err)
+	}
+	if result.Check.DC != 22 {
+		t.Errorf("DC = %d, want 22 for 44 damage", result.Check.DC)
+	}
+}
+
+// Being knocked out ends it outright: there is no save against unconsciousness.
+func TestBeingKnockedOutBreaksConcentrationWithoutASave(t *testing.T) {
+	e := engine(51)
+	c := holder(t)
+	c.CombatStats.HitPoints.Current = 0
+
+	result, err := e.ConcentrationCheck(c, 12)
+	if err != nil {
+		t.Fatalf("ConcentrationCheck: %v", err)
+	}
+	if !result.Broken {
+		t.Fatal("being knocked out did not break concentration")
+	}
+	if result.Check != nil {
+		t.Error("a save was rolled against unconsciousness")
+	}
+	if c.IsConcentrating() {
+		t.Error("the spell is still held")
+	}
+}
+
+// A caster holding nothing has nothing to check, and asking is not an error.
+func TestCheckingWhenNotConcentratingDoesNothing(t *testing.T) {
+	e := engine(52)
+	c := caster()
+
+	result, err := e.ConcentrationCheck(c, 20)
+	if err != nil {
+		t.Fatalf("ConcentrationCheck: %v", err)
+	}
+	if result.Broken || result.Check != nil {
+		t.Errorf("result = %+v, want nothing to have happened", result)
+	}
+}
+
+// Zero damage is not a hit, so it does not threaten a spell.
+func TestZeroDamageDoesNotThreatenConcentration(t *testing.T) {
+	e := engine(53)
+	c := holder(t)
+
+	result, err := e.ConcentrationCheck(c, 0)
+	if err != nil {
+		t.Fatalf("ConcentrationCheck: %v", err)
+	}
+	if result.Check != nil || result.Broken {
+		t.Error("a blow that dealt nothing forced a concentration save")
+	}
+	if !c.IsConcentrating() {
+		t.Error("the spell was dropped for no damage")
+	}
+}

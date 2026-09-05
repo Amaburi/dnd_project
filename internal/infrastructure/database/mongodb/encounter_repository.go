@@ -247,3 +247,21 @@ func Stats(e *models.CombatEncounter) EncounterStats {
 	}
 	return stats
 }
+
+// GetEncounterByEncounterID looks an encounter up by its business ID.
+func (r *EncounterRepository) GetEncounterByEncounterID(ctx context.Context, campaignID, encounterID string) (*models.CombatEncounter, error) {
+	encounters, err := r.findEncounters(ctx, bson.M{"campaign_id": campaignID, "encounter_id": encounterID})
+	if err != nil {
+		return nil, err
+	}
+	if len(encounters) == 0 {
+		return nil, nil
+	}
+	return encounters[0], nil
+}
+
+// SaveEncounterState is SaveEncounter under the name the encounter service
+// uses, so that service depends on what it does rather than on this type.
+func (r *EncounterRepository) SaveEncounterState(ctx context.Context, campaignID string, e *models.CombatEncounter) error {
+	return r.SaveEncounter(ctx, campaignID, e)
+}

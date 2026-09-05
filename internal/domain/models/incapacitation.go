@@ -114,3 +114,34 @@ func (c *Combatant) CanMove() (bool, string) {
 	}
 	return true, ""
 }
+
+// SyncHitPoints refreshes a combatant from its source document and re-derives
+// the status those hit points imply.
+//
+// The source is authoritative: a creature can be damaged or healed outside the
+// encounter -- a player attacking through the action endpoint, a potion between
+// fights -- and a combatant that kept its own tally would drift. Status is
+// re-derived because hit points and status must agree: a creature restored
+// above zero is no longer dying, and one dropped to zero is.
+//
+// The dead stay dead. Hit points do not undo that.
+func (c *Combatant) SyncHitPoints(hp HitPoints) {
+	if c.Status == CombatantDead {
+		return
+	}
+	c.HitPoints = hp
+
+	switch {
+	case hp.Current > 0:
+		if c.Status == CombatantDying || c.Status == CombatantStable {
+			c.Status = CombatantActive
+			c.DeathSaves = DeathSaves{}
+		}
+	case c.Status == CombatantActive:
+		if c.MakesDeathSaves {
+			c.Status = CombatantDying
+		} else {
+			c.Status = CombatantDead
+		}
+	}
+}

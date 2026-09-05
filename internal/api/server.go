@@ -132,6 +132,10 @@ func (s *Server) setupRoutes() {
 		v1.PUT("/campaigns/:id/characters/:char_id", s.characterHandler.UpdateCharacter)
 		v1.DELETE("/campaigns/:id/characters/:char_id", s.characterHandler.DeleteCharacter)
 
+		// Resting is what makes spell slots and hit points a renewable
+		// resource rather than a countdown to the end of the campaign.
+		v1.POST("/campaigns/:id/characters/:char_id/rest", s.characterHandler.Rest)
+
 		// Monster statblock routes
 		v1.POST("/campaigns/:id/monsters", s.monsterHandler.CreateMonster)
 		v1.GET("/campaigns/:id/monsters", s.monsterHandler.ListMonsters)
@@ -169,6 +173,10 @@ func (s *Server) setupRoutes() {
 		v1.POST("/campaigns/:id/encounters/:encounter_id/combatants", s.combatHandler.AddCombatant)
 		v1.POST("/campaigns/:id/encounters/:encounter_id/initiative", s.combatHandler.RollInitiative)
 		v1.POST("/campaigns/:id/encounters/:encounter_id/next-turn", s.combatHandler.NextTurn)
+
+		// The half of combat that was missing: actually playing a monster's
+		// turn, rather than only tracking whose turn it is.
+		v1.POST("/campaigns/:id/encounters/:encounter_id/resolve-turn", s.combatHandler.ResolveTurn)
 		v1.POST("/campaigns/:id/encounters/:encounter_id/end", s.combatHandler.EndEncounter)
 
 		// Dice. Not campaign-scoped: a roll is not campaign state, and making

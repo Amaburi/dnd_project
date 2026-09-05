@@ -221,3 +221,49 @@ func TestAnAutomaticFailureIsNotReportedAsARollOfZero(t *testing.T) {
 		t.Errorf("an ordinary save does not report its roll: %q", rolled.Save.Summary())
 	}
 }
+
+// Monsters play by the same rules. A goblin swinging at a paralysed hero gets
+// advantage and an automatic critical; a webbed goblin swings at disadvantage.
+// Before this, MonsterAttack read no conditions at all -- every rule above
+// applied to the party and to nobody else.
+func TestMonsterAttacksReadConditionsToo(t *testing.T) {
+	scimitar := models.MonsterAction{
+		Name: "Scimitar", AttackBonus: intPtr(4),
+		DamageDice: "1d6+2", DamageType: models.DamageSlashing,
+	}
+
+	// A helpless target: two dice for advantage, and the hit is a critical.
+	e := scripted(2, 17, 4, 4)
+	attacker := &models.Combatant{Name: "Goblin", Status: models.CombatantActive}
+	target := helpless(models.ConditionParalyzed, 15, 60)
+
+	attack, err := e.MonsterAttack(attacker, scimitar, target, models.RollNormal)
+	if err != nil {
+		t.Fatalf("MonsterAttack: %v", err)
+	}
+	if len(attack.Roll.Rolls) != 2 {
+		t.Fatalf("rolled %d dice, want two for advantage", len(attack.Roll.Rolls))
+	}
+	if attack.Outcome != models.AttackCritical {
+		t.Errorf("outcome = %s, want a critical against a paralysed target", attack.Outcome)
+	}
+
+	// A restrained attacker swings at disadvantage.
+	webbed := &models.Combatant{
+		Name: "Goblin", Status: models.CombatantActive,
+		Conditions: []models.Condition{models.ConditionRestrained},
+	}
+	e2 := scripted(18, 3, 4)
+	attack2, err := e2.MonsterAttack(webbed, scimitar, dummy(15, 60), models.RollNormal)
+	if err != nil {
+		t.Fatalf("MonsterAttack: %v", err)
+	}
+	if len(attack2.Roll.Rolls) != 2 {
+		t.Fatalf("rolled %d dice, want two for disadvantage", len(attack2.Roll.Rolls))
+	}
+	if attack2.Roll.Natural != 3 {
+		t.Errorf("kept %d, want the lower die 3", attack2.Roll.Natural)
+	}
+}
+
+func intPtr(n int) *int { return &n }

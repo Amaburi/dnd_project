@@ -462,3 +462,61 @@ func addDamage(result *CastResult, damage *DamageResult) {
 		result.Damage.Critical = true
 	}
 }
+
+// ConcentrationResult is what a threat to a held spell came to.
+type ConcentrationResult struct {
+	// Spell is the spell that was being held, empty if none was.
+	Spell string `json:"spell,omitempty"`
+
+	// Check is the Constitution save. Nil when no save was called for --
+	// either nothing was held, no damage was dealt, or the caster was knocked
+	// out, which ends concentration without a roll.
+	Check *CheckResult `json:"check,omitempty"`
+
+	Broken bool   `json:"broken"`
+	Reason string `json:"reason,omitempty"`
+
+	// Targets are the creatures whose condition ends with the spell, so the
+	// caller can lift it. Without this a broken Hold Person leaves its victim
+	// paralysed for ever.
+	Targets   []string         `json:"targets,omitempty"`
+	Condition models.Condition `json:"condition,omitempty"`
+}
+
+// ConcentrationCheck resolves a threat to a spell the caster is holding.
+//
+// Damage forces a Constitution save at DC 10, or half the damage if that is
+// worse. Being incapacitated or killed ends concentration outright: there is no
+// saving throw against falling unconscious, so none is rolled.
+func (e *Engine) ConcentrationCheck(caster *models.Character, damage int) (ConcentrationResult, error) {
+	if !caster.IsConcentrating() {
+		return ConcentrationResult{}, nil
+	}
+
+	held := *caster.Spells.Concentrating
+	result := ConcentrationResult{
+		Spell: held.Spell, Targets: held.Targets, Condition: held.Condition,
+	}
+
+	if kept, reason := caster.KeepsConcentration(); !kept {
+		caster.EndConcentration()
+		result.Broken, result.Reason = true, reason
+		return result, nil
+	}
+
+	// A blow that dealt nothing is not a threat to a spell.
+	if damage <= 0 {
+		return result, nil
+	}
+
+	dc := models.ConcentrationDC(damage)
+	check := e.SavingThrow(caster, models.AbilityConstitution, dc, models.RollNormal)
+	result.Check = &check
+
+	if !check.Succeeded() {
+		caster.EndConcentration()
+		result.Broken = true
+		result.Reason = fmt.Sprintf("%s loses concentration on %s", caster.Name, held.Spell)
+	}
+	return result, nil
+}

@@ -11,6 +11,7 @@ OpenAI-compatible AI provider (Groq by default).
 - 👥 **Character Management**: Full character sheet support
 - 📖 **Story Tracking**: Campaign narrative and session history
 - 💾 **MongoDB Storage**: Persistent campaign data
+- 🩸 **Monsters fight back**: `POST /encounters/:id/resolve-turn` plays a monster's turn
 - 🎯 **Conditions that bite**: advantage from a helpless target, auto-crits, auto-failed saves
 - ✨ **Spellcasting**: 85 SRD spells with real mechanics -- cantrip scaling, upcasting, saves, conditions
 - 🧠 **Campaign memory**: budgeted history with a rolling summary, so a long campaign still fits
@@ -162,6 +163,11 @@ rate_limit:
 - `POST /api/v1/campaigns/:id/sessions/:session_id/events` - Append an event
 - `GET /api/v1/campaigns/:id/sessions/:session_id/events` - Session log (`?type=` filter)
 - `GET /api/v1/campaigns/:id/events/recent` - Recent events plus a rendered context block (`?limit=`)
+
+### Rest
+
+- `POST /api/v1/campaigns/:id/characters/:char_id/rest` - `{"type": "short", "hit_dice": [10]}`
+  or `{"type": "long"}`. A long rest needs at least 1 hit point; a short rest does not.
 
 ### Dice
 

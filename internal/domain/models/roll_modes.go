@@ -133,6 +133,25 @@ func (c *Character) conditionAttackMode() RollMode {
 	return mode
 }
 
+// AttackerMode is the advantage or disadvantage a combatant's own state gives
+// its attacks.
+//
+// It is the Combatant counterpart of Character.conditionAttackMode, so a goblin
+// and a wizard get the same answer for the same condition.
+func (c *Combatant) AttackerMode() RollMode {
+	mode := RollNormal
+	if ExhaustionEffectsFor(c.Exhaustion).DisadvantageOnAttacksAndSaves {
+		mode = mode.Combine(RollDisadvantage)
+	}
+	if anyCondition(c.Conditions, clumsyAttackerConditions) {
+		mode = mode.Combine(RollDisadvantage)
+	}
+	if c.HasCondition(ConditionInvisible) {
+		mode = mode.Combine(RollAdvantage)
+	}
+	return mode
+}
+
 // AdvantageReason is a circumstance the parser may propose.
 //
 // It is a closed list on purpose. Letting a model grant advantage for free text

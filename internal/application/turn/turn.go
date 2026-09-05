@@ -289,7 +289,7 @@ func (s *Service) TakeAction(ctx context.Context, req *Request) (*Result, error)
 		}
 
 	case models.IntentCastSpell:
-		cast, target, refusal, err := s.resolveCast(ctx, req, actor, parsed.Intent, byName)
+		cast, target, refusal, err := s.resolveCast(ctx, req, actor, parsed.Intent, byName, result)
 		if err != nil {
 			return nil, err
 		}
@@ -482,6 +482,7 @@ func (s *Service) resolveCast(
 	actor *models.Character,
 	intent models.Intent,
 	byName map[string]*models.Monster,
+	result *Result,
 ) (*rules.CastResult, *models.Monster, string, error) {
 	def, ok := models.SpellByName(intent.Spell)
 	if !ok {
@@ -552,9 +553,29 @@ func (s *Service) resolveCast(
 	if err := s.monsters.UpdateHitPoints(ctx, req.CampaignID, monster.MonsterID, monster.HitPoints); err != nil {
 		return nil, nil, "", err
 	}
+
+	// A concentration spell replaces whatever was already held: 5e allows
+	// exactly one, which is what makes concentration a cost rather than a
+	// formality. What the spell imposed is recorded with it, because ending it
+	// has to undo it -- otherwise a dropped Hold Person leaves its victim held.
+	if def.Concentration {
+		held := models.Concentration{
+			Spell: def.Name, SlotLevel: slotLevel, Condition: def.Condition,
+		}
+		if cast.ConditionApplied {
+			held.Targets = []string{combatant.CombatantID}
+		}
+		if replaced := actor.BeginConcentration(held); replaced != "" {
+			// Dropping a held spell is something the player needs told: they
+			// spent a slot on it and it is gone.
+			result.Warning = fmt.Sprintf("concentration on %s ended", replaced)
+		}
+	}
+
 	// The slot is gone whether or not the spell landed, so it is written back
-	// before anything else can fail.
-	if slotLevel > 0 {
+	// before anything else can fail. Concentration rides along in the same
+	// document.
+	if slotLevel > 0 || def.Concentration {
 		if err := s.saveSpells(ctx, req, actor); err != nil {
 			return nil, nil, "", err
 		}

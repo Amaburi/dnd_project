@@ -259,7 +259,7 @@ Implement DeepSeek AI integration for narrative generation and DM functionality.
 - [x] Implement context management  (`internal/application/memory`: budgeted assembly, rolling summary, watermark)
 - [x] Add conversation history  (the append-only event log feeds every prompt through `memory.Build`)
 - [x] Optimize token usage  (`EstimateTokens` + `Budget`; compaction folds old events into `campaign.summary`)
-- [ ] Implement rate limiting for AI  (HTTP-level limiting is done in `middleware.RateLimit`; the per-hour *provider* budget in `rate_limit.ai_requests_per_hour` is still unwired)
+- [x] Implement rate limiting for AI  (HTTP-level in `middleware.RateLimit`; the per-hour *provider* budget is now enforced in the AI client, where one HTTP request may make several provider calls)
 - [x] Add AI cost tracking
 
 **Milestone**: Production-ready AI DM
@@ -366,7 +366,8 @@ Implement full combat encounter management with AI integration.
       existed: there was no spell catalogue, so nothing knew what a spell *did*, and the turn
       service never called them. Closed for real 2026-09-05 -- `models/spells_srd.go`,
       `rules/spellcasting.go`, and `IntentCastSpell` wired into `turn.TakeAction`.)
-- [x] Implement conditions/effects
+- [x] Implement conditions/effects  (2026-09-05: conditions now drive advantage, automatic
+      criticals, auto-failed saves and who may act -- before that they were stored and never read)
 - [x] Add movement mechanics
 
 **Milestone**: Full combat action resolution

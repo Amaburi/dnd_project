@@ -21,6 +21,7 @@ import (
 	"time"
 
 	"github.com/dnd-campaign/manager/internal/api/handlers"
+	"github.com/dnd-campaign/manager/internal/application/encounter"
 	"github.com/dnd-campaign/manager/internal/application/turn"
 	"github.com/dnd-campaign/manager/internal/domain/dice"
 	"github.com/dnd-campaign/manager/internal/domain/rules"
@@ -81,11 +82,12 @@ func newHarness(t *testing.T, replies ...string) *harness {
 	server := NewServer(
 		ServerConfig{Host: "127.0.0.1", Port: 0},
 		handlers.NewCampaignHandler(campaigns, characters, monsters, sessions, events, encounters),
-		handlers.NewCharacterHandler(characters, campaigns),
+		handlers.NewCharacterHandler(characters, campaigns, roller),
 		handlers.NewMonsterHandler(monsters, campaigns),
 		handlers.NewSessionHandler(sessions, events, campaigns),
 		handlers.NewActionHandler(turns, campaigns),
-		handlers.NewCombatHandler(encounters, characters, monsters, sessions, campaigns, roller),
+		handlers.NewCombatHandler(encounters, characters, monsters, sessions, campaigns, roller,
+			encounter.NewService(encounters, monsters, characters, events, narrator, rules.NewEngine(roller))),
 		handlers.NewDiceHandler(roller),
 	)
 

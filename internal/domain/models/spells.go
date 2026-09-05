@@ -54,6 +54,11 @@ type Spells struct {
 	// because it never merges with ordinary slots and returns on a short
 	// rest rather than a long one.
 	PactSlots SpellSlot `json:"pact_slots" bson:"pact_slots"`
+
+	// Concentrating is the one spell the caster is holding together, if any.
+	// 5e allows exactly one, which is what makes concentration a cost rather
+	// than a formality.
+	Concentrating *Concentration `json:"concentrating,omitempty" bson:"concentrating,omitempty"`
 }
 
 // AvailablePactSlots returns how many pact magic slots remain.

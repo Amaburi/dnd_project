@@ -362,8 +362,11 @@ func (e *Engine) WeaponAttack(
 }
 
 // MonsterAttack resolves a monster's attack action against a combatant.
+// The attacker is a Combatant rather than a Monster because conditions live on
+// the combatant: a statblock cannot tell you the creature is webbed. Before
+// this took one, every condition rule applied to the party and to nobody else.
 func (e *Engine) MonsterAttack(
-	attacker *models.Monster,
+	attacker *models.Combatant,
 	action models.MonsterAction,
 	target *models.Combatant,
 	situational models.RollMode,
@@ -372,8 +375,22 @@ func (e *Engine) MonsterAttack(
 		return AttackResult{}, models.Invalid("action %q is not an attack", action.Name)
 	}
 
-	roll := e.roller.D20(*action.AttackBonus, situational)
+	// A monster action carries a reach or a range; anything with a range is a
+	// ranged attack and so cannot land an automatic critical.
+	melee := action.RangeNormal == 0
+	reach := action.ReachFeet
+	if reach == 0 {
+		reach = 5
+	}
+	close := melee && reach <= 5
+
+	mode := attacker.AttackerMode().
+		Combine(target.DefenderAttackMode(melee)).
+		Combine(situational)
+
+	roll := e.roller.D20(*action.AttackBonus, mode)
 	outcome := models.ResolveAttack(roll, target.ArmorClass, models.NaturalCrit)
+	outcome = upgradeToCritical(outcome, target, close)
 
 	result := AttackResult{
 		Attacker: attacker.Name, Target: target.Name, Weapon: action.Name,

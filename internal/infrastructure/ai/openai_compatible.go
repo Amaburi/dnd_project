@@ -25,6 +25,10 @@ const maxStreamLineBytes = 1024 * 1024
 type OpenAICompatibleClient struct {
 	config     ClientConfig
 	httpClient *http.Client
+
+	// budget caps calls to the provider over a rolling hour. Nil-safe and
+	// disabled when the limit is zero.
+	budget *budget
 }
 
 // Validate reports whether the configuration can address a provider at all.
@@ -66,11 +70,18 @@ func NewOpenAICompatibleClient(config ClientConfig) *OpenAICompatibleClient {
 		httpClient: &http.Client{
 			Timeout: config.Timeout,
 		},
+		budget: newBudget(config.RequestsPerHour, nil),
 	}
 }
 
 // ChatCompletion sends a chat completion request
 func (c *OpenAICompatibleClient) ChatCompletion(ctx context.Context, req *ChatRequest) (*ChatResponse, error) {
+	// The budget is checked before the retry loop, not inside it: a refusal is
+	// a local decision and retrying it would spend the same budget again.
+	if err := c.budget.reserve(); err != nil {
+		return nil, err
+	}
+
 	// Set default model if not specified
 	if req.Model == "" {
 		req.Model = c.config.Model
@@ -280,6 +291,10 @@ func (c *OpenAICompatibleClient) handleErrorResponse(statusCode int, header http
 // mid-stream failure ends the stream and is reported on the error channel
 // rather than silently closing it.
 func (c *OpenAICompatibleClient) StreamChatCompletion(ctx context.Context, req *ChatRequest) (*ChatStream, error) {
+	if err := c.budget.reserve(); err != nil {
+		return nil, err
+	}
+
 	// Set streaming flag
 	req.Stream = true
 

@@ -275,7 +275,8 @@ func TestMonsterAttack(t *testing.T) {
 	}
 
 	target := dummy(10, 30)
-	result, err := e.MonsterAttack(&goblin, scimitar, target, models.RollNormal)
+	attacker := goblin.ToCombatant("cb-goblin")
+	result, err := e.MonsterAttack(&attacker, scimitar, target, models.RollNormal)
 	if err != nil {
 		t.Fatalf("MonsterAttack: %v", err)
 	}
@@ -287,7 +288,7 @@ func TestMonsterAttack(t *testing.T) {
 	}
 
 	// A non-attack action is rejected rather than silently rolling nothing.
-	if _, err := e.MonsterAttack(&goblin, models.MonsterAction{Name: "Howl"}, target, models.RollNormal); err == nil {
+	if _, err := e.MonsterAttack(&attacker, models.MonsterAction{Name: "Howl"}, target, models.RollNormal); err == nil {
 		t.Error("a non-attack action should be rejected")
 	}
 }

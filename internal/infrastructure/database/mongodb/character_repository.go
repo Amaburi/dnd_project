@@ -366,7 +366,8 @@ func (r *CharacterRepository) SearchCharacters(ctx context.Context, campaignID s
 	})
 }
 
-// UpdateSpellSlots writes back the caster's spell resources.
+// UpdateSpellSlots writes back the caster's spell resources: slots, pact slots
+// and the spell they are concentrating on.
 //
 // It is its own method rather than part of UpdateCharacter for the reason the
 // rest of this file sets fields individually: a turn holds a character it read
@@ -385,13 +386,43 @@ func (r *CharacterRepository) UpdateSpellSlots(ctx context.Context, characterID 
 		ctx,
 		bson.M{"character_id": characterID},
 		bson.M{"$set": bson.M{
-			"spells.slots":      spells.Slots,
-			"spells.pact_slots": spells.PactSlots,
-			"updated_at":        time.Now().UTC(),
+			"spells.slots":         spells.Slots,
+			"spells.pact_slots":    spells.PactSlots,
+			"spells.concentrating": spells.Concentrating,
+			"updated_at":           time.Now().UTC(),
 		}},
 	)
 	if err != nil {
 		return fmt.Errorf("failed to update spell slots: %w", err)
+	}
+	if result.MatchedCount == 0 {
+		return models.NotFound("character")
+	}
+	return nil
+}
+
+// UpdateHitPoints writes a character's hit points back, keyed by character_id.
+//
+// Combatants reference their source by character_id, so a blow landed in an
+// encounter needs this rather than the _id-keyed UpdateCharacterHP. Without it
+// the damage lives only in the encounter and the party heals itself simply by
+// walking away from the fight.
+func (r *CharacterRepository) UpdateHitPoints(ctx context.Context, campaignID, characterID string, hp models.HitPoints) error {
+	if characterID == "" {
+		return models.Invalid("character_id is required")
+	}
+
+	collection := r.client.Database().Collection(string(Characters))
+	result, err := collection.UpdateOne(
+		ctx,
+		bson.M{"character_id": characterID, "campaign_id": campaignID},
+		bson.M{"$set": bson.M{
+			"combat_stats.hit_points": hp,
+			"updated_at":              time.Now().UTC(),
+		}},
+	)
+	if err != nil {
+		return fmt.Errorf("failed to update character hit points: %w", err)
 	}
 	if result.MatchedCount == 0 {
 		return models.NotFound("character")

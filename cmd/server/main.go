@@ -12,6 +12,7 @@ import (
 	"github.com/dnd-campaign/manager/internal/api"
 	"github.com/dnd-campaign/manager/internal/api/handlers"
 	"github.com/dnd-campaign/manager/internal/api/middleware"
+	"github.com/dnd-campaign/manager/internal/application/encounter"
 	"github.com/dnd-campaign/manager/internal/application/memory"
 	"github.com/dnd-campaign/manager/internal/application/turn"
 	"github.com/dnd-campaign/manager/internal/domain/dice"
@@ -85,12 +86,13 @@ func main() {
 	// The AI service and rules engine behind the turn endpoint. A missing key
 	// is fatal here rather than a surprise on the first player action.
 	aiService, err := ai.NewService(ai.ClientConfig{
-		Provider:   cfg.AI.Provider,
-		APIKey:     cfg.AI.APIKey,
-		BaseURL:    cfg.AI.BaseURL,
-		Model:      cfg.AI.Model,
-		Timeout:    cfg.AI.Timeout,
-		MaxRetries: cfg.AI.MaxRetries,
+		Provider:        cfg.AI.Provider,
+		APIKey:          cfg.AI.APIKey,
+		BaseURL:         cfg.AI.BaseURL,
+		Model:           cfg.AI.Model,
+		Timeout:         cfg.AI.Timeout,
+		MaxRetries:      cfg.AI.MaxRetries,
+		RequestsPerHour: cfg.RateLimit.AIRequestsPerHour,
 		Pricing: ai.Pricing{
 			PromptUSDPerMillion:     cfg.AI.Pricing.PromptUSDPerMillion,
 			CompletionUSDPerMillion: cfg.AI.Pricing.CompletionUSDPerMillion,
@@ -110,6 +112,13 @@ func main() {
 	// of recent events; this replaces it with one that also carries the rolling
 	// summary, so a campaign does not forget its first session once the log
 	// outgrows a context window.
+	// Monster turns. The tracker knew whose turn it was and the engine knew how
+	// to resolve an attack; this is the thread between them.
+	encounterTurns := encounter.NewService(
+		encounterRepo, monsterRepo, characterRepo, eventRepo,
+		aiService, rules.NewEngine(roller),
+	)
+
 	campaignMemory := memory.New(eventRepo, campaignRepo, aiService)
 	campaignMemory.Budget = memory.Budget{
 		MaxTokens: cfg.Memory.MaxTokens,
@@ -125,12 +134,12 @@ func main() {
 	// their characters on delete, characters resolve their campaign by _id.
 	campaignHandler := handlers.NewCampaignHandler(
 		campaignRepo, characterRepo, monsterRepo, sessionRepo, eventRepo, encounterRepo)
-	characterHandler := handlers.NewCharacterHandler(characterRepo, campaignRepo)
+	characterHandler := handlers.NewCharacterHandler(characterRepo, campaignRepo, roller)
 	monsterHandler := handlers.NewMonsterHandler(monsterRepo, campaignRepo)
 	sessionHandler := handlers.NewSessionHandler(sessionRepo, eventRepo, campaignRepo)
 	actionHandler := handlers.NewActionHandler(turnService, campaignRepo)
 	combatHandler := handlers.NewCombatHandler(
-		encounterRepo, characterRepo, monsterRepo, sessionRepo, campaignRepo, roller)
+		encounterRepo, characterRepo, monsterRepo, sessionRepo, campaignRepo, roller, encounterTurns)
 	diceHandler := handlers.NewDiceHandler(roller)
 
 	// Create API server

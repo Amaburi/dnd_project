@@ -265,3 +265,18 @@ func (r *MonsterRepository) UpdateHitPoints(ctx context.Context, campaignID, mon
 	}
 	return nil
 }
+
+// GetMonsterByMonsterID looks a statblock up by its business ID.
+//
+// Combatants reference their source by monster_id, not by _id, so resolving a
+// creature mid-fight needs this rather than the route-facing lookup.
+func (r *MonsterRepository) GetMonsterByMonsterID(ctx context.Context, campaignID, monsterID string) (*models.Monster, error) {
+	monsters, err := r.findMonsters(ctx, bson.M{"campaign_id": campaignID, "monster_id": monsterID})
+	if err != nil {
+		return nil, err
+	}
+	if len(monsters) == 0 {
+		return nil, nil
+	}
+	return monsters[0], nil
+}

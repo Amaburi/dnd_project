@@ -100,8 +100,16 @@ type Intent struct {
 	// would cost nothing, which is the one reading that must not be possible.
 	SlotLevel int `json:"slot_level,omitempty"`
 
-	// SuggestedDC is the difficulty the parser proposes. The DM is free to
-	// overrule it; nothing resolves against it until someone accepts it.
+	// SuggestedDC is the difficulty the parser proposes, and the turn resolves
+	// against it.
+	//
+	// That is a real division of labour rather than a leak: setting difficulty
+	// is a Dungeon Master's judgement, and the model is the DM here. What it is
+	// not allowed to do is decide the *outcome* -- the engine rolls, compares
+	// and reports, and the narration describes what it found.
+	//
+	// Normalise snaps this to the table's rungs, because a DC 17 is not a 5e
+	// number: it is a model splitting the difference between two real ones.
 	SuggestedDC int `json:"suggested_dc,omitempty"`
 
 	Confidence Confidence `json:"confidence"`
@@ -126,6 +134,37 @@ var DifficultyClasses = map[string]int{
 	"hard":              20,
 	"very_hard":         25,
 	"nearly_impossible": 30,
+}
+
+// DifficultyRungs are the standard difficulties in ascending order.
+//
+// They are the only values a check should ever resolve against: 5e has six
+// rungs, and a DC between two of them is a number nobody chose.
+var DifficultyRungs = []int{5, 10, 15, 20, 25, 30}
+
+// SnapToDifficulty rounds a proposed difficulty onto the nearest rung.
+//
+// Zero is preserved because zero means "no difficulty proposed" -- snapping it
+// to 5 would give every unremarkable action a check to pass. Ties round down,
+// towards the player.
+func SnapToDifficulty(dc int) int {
+	if dc <= 0 {
+		return 0
+	}
+
+	best := DifficultyRungs[0]
+	bestDistance := -1
+	for _, rung := range DifficultyRungs {
+		distance := dc - rung
+		if distance < 0 {
+			distance = -distance
+		}
+		// Strictly closer, so an exact tie keeps the lower rung already held.
+		if bestDistance < 0 || distance < bestDistance {
+			best, bestDistance = rung, distance
+		}
+	}
+	return best
 }
 
 // DifficultyLabel names the rung a DC sits on.
@@ -264,14 +303,7 @@ func (i *Intent) Normalise() {
 	if i.SlotLevel > 9 {
 		i.SlotLevel = 9
 	}
-	if i.SuggestedDC != 0 {
-		if i.SuggestedDC < 5 {
-			i.SuggestedDC = 5
-		}
-		if i.SuggestedDC > 30 {
-			i.SuggestedDC = 30
-		}
-	}
+	i.SuggestedDC = SnapToDifficulty(i.SuggestedDC)
 }
 
 // Validate checks an intent against what the character can actually do.
